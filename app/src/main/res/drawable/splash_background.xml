@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Solid launch colour: no white flash and no old splash image underneath. -->
+    <item android:drawable="@color/splash_bg" />
+
+    <!-- New splash artwork, centred without cropping. The wordmark is part of this image. -->
+    <item>
+        <bitmap
+            android:src="@drawable/splash_screen"
+            android:gravity="center" />
+    </item>
+</layer-list>
