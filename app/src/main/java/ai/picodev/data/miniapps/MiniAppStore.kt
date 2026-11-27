@@ -25,7 +25,7 @@ object MiniAppStore {
     const val CATALOG = "https://raw.githubusercontent.com/HassanDevo/Pico-Dev-RSS/main/$INDEX"
     const val PAGE = "https://github.com/$REPO"
     /** SHA-256 of the key that signs this repository's apps (the official ones). */
-    const val SIGNER = "57b8a7a0466f5dda67b1082e15305d5e3f3156e10ee9e9d0f7af6a505af53bed"
+    const val SIGNER = "4dc979c3789079e99059dec3c70eb5d6e7e02110fc865754fb14de3fcec9e14c"
 
     /** Installed from a package signed with the official key, and its files still match the signature. */
     fun isOfficial(app: MiniApp) = app.signed && !app.tampered && app.signer.equals(SIGNER, ignoreCase = true)
