@@ -276,6 +276,25 @@ object LocalServerManager {
     }
 
     /**
+     * Shown in the Server Runner log before the bridge starts, so an "exec login: Permission denied" or a missing
+     * libandroid-support.so can be matched to the actual file modes. Custom agent paths with spaces are quoted.
+     */
+    private fun bootstrapDiagnostic(context: Context): String {
+        val bin = LocalEnvironmentManager.getBinDir(context)
+        val home = LocalEnvironmentManager.getHomeDir(context)
+        val configured = AuthPreferences(context).getOpenCodeBinaryPathSync().trim()
+            .ifBlank { AuthPreferences.DEFAULT_OPENCODE_BINARY_PATH }
+        val openCode = when {
+            configured == "~" -> home.absolutePath
+            configured.startsWith("~/") -> File(home, configured.removePrefix("~/")).absolutePath
+            else -> configured
+        }
+        fun quote(path: String) = "'" + path.replace("'", "'\\''") + "'"
+        return "echo 'Pico Dev bootstrap permissions:'; " +
+            "ls -l ${quote(File(bin, "login").absolutePath)} ${quote(File(bin, "bash").absolutePath)} ${quote(openCode)} 2>&1"
+    }
+
+    /**
      * Clear terminal transcript logs upon user request
      */
     fun clearLogs() {
@@ -397,6 +416,8 @@ object LocalServerManager {
         }
 
         val appContext = context.applicationContext
+        // an environment installed by an older build can still hold ai.antigem paths and 0600 libraries
+        LocalEnvironmentManager.ensureBootstrapRuntime(appContext)
         if (ChrootManager.isActive(appContext)) {
             startChrootServer(appContext, forceRestart, existingSession)
             return
@@ -420,6 +441,8 @@ object LocalServerManager {
             return
         }
 
+        val diagnostic = bootstrapDiagnostic(appContext)
+        Log.d(TAG, "[ServerManager] $diagnostic")
         _status.value = LocalServerStatus.Starting
 
         // If a persistent terminal session is already alive, reuse it and execute command inside it
@@ -427,7 +450,7 @@ object LocalServerManager {
             Log.d(TAG, "[ServerManager] Reusing active persistent terminal session to launch: $command")
             existingSession.write("\u0003")
             delay(150)
-            existingSession.write("cd \$HOME && $command\n")
+            existingSession.write("$diagnostic; cd \$HOME && $command\n")
             _status.value = LocalServerStatus.Running()
             return
         }
@@ -443,7 +466,7 @@ object LocalServerManager {
                 initialTitle = "Server Runner",
                 context = appContext,
                 isSsh = false,
-                initialCommand = command,
+                initialCommand = "$diagnostic; cd \$HOME && $command",
                 initialCols = 80,
                 initialRows = 24
             )

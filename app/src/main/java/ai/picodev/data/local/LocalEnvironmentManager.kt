@@ -69,6 +69,8 @@ object LocalEnvironmentManager {
 
     private const val TAG = "LocalEnvironmentManager"
     private const val BOOTSTRAP_VERSION = "2026.08"
+    /** Written when an existing installation has had its old-prefix paths and permissions repaired. */
+    private const val BOOTSTRAP_FIX_MARKER = ".picodev-bootstrap-fix-v2"
     // Minimum 10 MB required for a real Termux bootstrap archive
     private const val MIN_BOOTSTRAP_SIZE_BYTES = 10 * 1024 * 1024L
     /** Unpacked size per archive byte, for an archive whose unpacked size can't be read (the rootfs ZIPs are ~3.1). */
@@ -214,9 +216,12 @@ object LocalEnvironmentManager {
         )
     }
 
-    /** After extraction/relocation: every file under usr/bin and usr/lib must be 0755 (symlinks are never followed). */
+    /** ZIPs from Termux store binaries as 0700 and shared libraries as 0600: both need 0755 after extraction. */
+    private val chmodSkippedExtensions = setOf("apk", "jar", "dex", "zip", "whl", "aar", "jmod")
+
+    /** After extraction/relocation: every executable tree (and every shared library) is 0755; links are left alone. */
     private fun ensureBootstrapExecutables(prefixDir: File) {
-        for (dirName in listOf("bin", "lib")) {
+        for (dirName in listOf("bin", "libexec", "lib", "applets", "sbin")) {
             val dir = File(prefixDir, dirName)
             if (!dir.exists()) continue
             val pending = ArrayDeque<File>().apply { add(dir) }
@@ -231,12 +236,81 @@ object LocalEnvironmentManager {
                                 Os.chmod(file.absolutePath, 493) // 0755
                                 pending.add(file)
                             }
-                            file.isFile -> Os.chmod(file.absolutePath, 493) // 0755
+                            file.isFile && file.extension.lowercase() !in chmodSkippedExtensions -> {
+                                // 0755 also makes shared libraries readable by the dynamic linker. Signed .apk/.dex
+                                // files stay read-only: Android 14 refuses to load a world/owner-writable dex file.
+                                Os.chmod(file.absolutePath, 493) // 0755
+                            }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "chmod 755 failed on ${file.absolutePath}: ${e.message}")
                     }
                 }
+            }
+        }
+    }
+
+    /**
+     * Self-heal an environment installed by an older build: rewrite the rootfs's old absolute prefix and repair
+     * permissions before a shell or the server is started. Runs once (the marker survives app updates), and also
+     * right after a fresh extraction, where the marker is written by the installer.
+     */
+    fun ensureBootstrapRuntime(context: Context) {
+        val prefixDir = getPrefixDir(context)
+        if (!prefixDir.isDirectory) return
+        val marker = File(prefixDir, BOOTSTRAP_FIX_MARKER)
+        if (marker.exists()) return
+        val pkg = TermuxRelocation.targetPackage(context) ?: return
+        try {
+            log("Repairing bootstrap prefix and permissions for $pkg...")
+            val homeDir = getHomeDir(context)
+            val usr = TermuxRelocation.relocateTree(prefixDir, pkg, releasePaths = true)
+            val home = if (homeDir.isDirectory) TermuxRelocation.relocateTree(homeDir, pkg, pathsOnly = true, releasePaths = true) else TermuxRelocation.Stats()
+            ensureBootstrapExecutables(prefixDir)
+            applySymlinksTxt(prefixDir, homeDir)
+            log("✓ Repaired ${usr.patchedFiles + home.patchedFiles} files and ${usr.links + home.links} symlinks; 0755 on bin, libexec and lib")
+            marker.writeText("v2\n")
+        } catch (e: Exception) {
+            Log.w(TAG, "Bootstrap repair failed: ${e.message}")
+            log("⚠ Bootstrap repair failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Termux bootstrap ZIPs list `link-name←relative/path` pairs in SYMLINKS.txt. A copy is kept in usr/ so the
+     * links can be recreated on a later repair too; embedded ZIP/tar symlinks need no list.
+     */
+    private fun applySymlinksTxt(prefixDir: File, homeDir: File) {
+        val listFile = File(prefixDir, "SYMLINKS.txt")
+        if (!listFile.isFile) return
+        val links = try {
+            listFile.readLines().mapNotNull { line ->
+                val parts = line.trim().split("←")
+                if (parts.size == 2 && parts[0].isNotBlank() && parts[1].isNotBlank()) {
+                    parts[0].trim() to parts[1].trim()
+                } else null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed reading SYMLINKS.txt: ${e.message}")
+            return
+        }
+        if (links.isEmpty()) return
+        log("Creating ${links.size} symlinks from SYMLINKS.txt...")
+        for ((target, linkRelPath) in links) {
+            val linkFile = rootfsTarget(linkRelPath.removePrefix("./"), prefixDir, homeDir) ?: continue
+            try {
+                linkFile.parentFile?.let { p ->
+                    if (!p.exists()) p.mkdirs()
+                    try { Os.chmod(p.absolutePath, 493) } catch (_: Exception) {}
+                }
+                if (linkFile.exists() || isSymlink(linkFile)) {
+                    linkFile.setWritable(true, true)
+                    try { linkFile.delete() } catch (_: Exception) {}
+                }
+                Os.symlink(target, linkFile.absolutePath)
+            } catch (e: Exception) {
+                if (StorageSpace.isOutOfSpace(e)) throw e
+                Log.w(TAG, "Failed creating symlink ${linkFile.absolutePath} -> $target: ${e.message}")
             }
         }
     }
@@ -1398,7 +1472,6 @@ object LocalEnvironmentManager {
             } else {
                 val destDir = prefixDir
                 log("Extracting rootfs files from ZIP into ${destDir.absolutePath}...")
-                val symlinksFromTxt = mutableListOf<Pair<String, String>>()
                 CommonsZipFile(archiveToExtract).use { zip ->
                     val entriesList = zip.entries.toList()
                     val totalEntries = entriesList.size
@@ -1407,20 +1480,15 @@ object LocalEnvironmentManager {
                         val rawName = entry.name
 
                         if (rawName == "SYMLINKS.txt" || rawName.endsWith("/SYMLINKS.txt")) {
+                            // keep a copy in usr/: applySymlinksTxt() uses it now and can recreate the links on a
+                            // later repair, without needing the downloaded ZIP any more
                             try {
-                                zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).useLines { lines ->
-                                    lines.forEach { line ->
-                                        val trimmed = line.trim()
-                                        if (trimmed.isNotEmpty()) {
-                                            val parts = trimmed.split("←")
-                                            if (parts.size == 2) {
-                                                symlinksFromTxt.add(Pair(parts[0].trim(), parts[1].trim()))
-                                            }
-                                        }
-                                    }
-                                }
+                                val text = zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { it.readText() }
+                                val stored = File(prefixDir, "SYMLINKS.txt")
+                                stored.writeText(text)
+                                try { Os.chmod(stored.absolutePath, 420) } catch (_: Exception) {} // 0644
                             } catch (e: Exception) {
-                                Log.w(TAG, "Failed reading SYMLINKS.txt: ${e.message}")
+                                Log.w(TAG, "Failed storing SYMLINKS.txt: ${e.message}")
                             }
                             continue
                         }
@@ -1518,38 +1586,13 @@ object LocalEnvironmentManager {
                             updateInstallNotification(appContext, L.local.environmentManager.extractingRootfsPct(pct), rawName.substringAfterLast("/"), pct)
                         }
                     }
-
-                    // Apply all symlinks listed in SYMLINKS.txt
-                    if (symlinksFromTxt.isNotEmpty()) {
-                        log("Creating ${symlinksFromTxt.size} symlinks from SYMLINKS.txt...")
-                        for ((target, linkRelPath) in symlinksFromTxt) {
-                            try {
-                                val cleanRel = linkRelPath.removePrefix("./")
-                                val linkFile = rootfsTarget(cleanRel, prefixDir, homeDir)
-
-                                if (linkFile != null) {
-                                    linkFile.parentFile?.let { p ->
-                                        if (!p.exists()) {
-                                            p.mkdirs()
-                                            try { Os.chmod(p.absolutePath, 493) } catch (_: Exception) {}
-                                        }
-                                    }
-                                    if (linkFile.exists() || isSymlink(linkFile)) {
-                                        linkFile.setWritable(true, true)
-                                        try { linkFile.delete() } catch (_: Exception) {}
-                                    }
-                                    Os.symlink(target, linkFile.absolutePath)
-                                }
-                            } catch (e: Exception) {
-                                if (StorageSpace.isOutOfSpace(e)) throw e
-                                Log.w(TAG, "Error creating symlink for $linkRelPath -> $target: ${e.message}")
-                            }
-                        }
-                    }
                 }
             }
 
-            // Termux files are built for com.termux: rewrite them for this app's package name (same length)
+            // SYMLINKS.txt (Termux bootstrap) names links that are not stored as ZIP/tar symlinks: create them now.
+            applySymlinksTxt(prefixDir, homeDir)
+
+            // Termux/rootfs files carry absolute paths for their original package: rewrite them for this app.
             TermuxRelocation.targetPackage(appContext)?.let { pkg ->
                 log("Adapting Termux files for $pkg...")
                 _installerState.value = LocalInstallerState.Configuring(
@@ -1569,10 +1612,11 @@ object LocalEnvironmentManager {
                 log("✓ Adapted ${usr.patchedFiles + home.patchedFiles} files and ${usr.links + home.links} symlinks (${usr.files + home.files} files checked)")
             }
 
-            // SYMLINKS.txt has been applied above (and archive symlinks during extraction): now make every file in
-            // usr/bin and usr/lib executable, including shared libraries needed by the dynamic linker.
-            log("Setting 0755 on usr/bin and usr/lib...")
+            // symlinks have been created: now make every file in usr/bin, usr/libexec and usr/lib (shared libraries
+            // included) readable and executable, so no shell or dynamic linker hits "Permission denied".
+            log("Setting 0755 on usr/bin, usr/libexec and usr/lib...")
             ensureBootstrapExecutables(prefixDir)
+            File(prefixDir, BOOTSTRAP_FIX_MARKER).writeText("v2\n")
 
             // Clean up downloaded zip
             tempZipFile.delete()

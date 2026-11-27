@@ -31,6 +31,14 @@ object TermuxRelocation {
      */
     private const val RELEASE_PACKAGE = "ai.picodev"
 
+    /**
+     * The package the bundled rootfs was built for. Its scripts (login's shebang) and ELF RUNPATHs still contain
+     * /data/data/ai.antigem/..., which this app cannot traverse: exec failed with "Permission denied" and the linker
+     * could not find libandroid-support.so. It is 10 bytes, like the other sources, so paths are rewritten in place.
+     */
+    private const val LEGACY_PACKAGE = "ai.antigem"
+    private val TERMUX_BYTES = TERMUX_PACKAGE.toByteArray(Charsets.US_ASCII)
+
     /** Zip-based files keep CRCs and dex files a checksum: rewriting bytes in them would corrupt them, so they are skipped. */
     private val SKIPPED_EXTENSIONS = setOf("apk", "jar", "zip", "aar", "whl", "dex", "jmod")
 
@@ -74,10 +82,9 @@ object TermuxRelocation {
         pathsOnly: Boolean = false,
         releasePaths: Boolean = false
     ): Stats {
-        val old = TERMUX_PACKAGE.toByteArray(Charsets.US_ASCII)
+        val patterns = sourcePatterns(newPackage, releasePaths)
         val new = newPackage.toByteArray(Charsets.US_ASCII)
-        require(old.size == new.size) { "$newPackage must have the length of $TERMUX_PACKAGE" }
-        val release = if (releasePaths && newPackage != RELEASE_PACKAGE) RELEASE_PACKAGE.toByteArray(Charsets.US_ASCII) else null
+        require(patterns.all { it.size == new.size }) { "$newPackage must have the length of every source package" }
         val stats = Stats()
         if (!root.exists()) return stats
         val dirs = ArrayDeque<File>().apply { add(root) }
@@ -89,11 +96,11 @@ object TermuxRelocation {
             for (f in children) {
                 val mode = try { Os.lstat(f.absolutePath).st_mode } catch (_: Exception) { continue }
                 when {
-                    OsConstants.S_ISLNK(mode) -> if (relink(f, newPackage, pathsOnly, release != null)) stats.links++
+                    OsConstants.S_ISLNK(mode) -> if (relink(f, newPackage, pathsOnly, releasePaths)) stats.links++
                     OsConstants.S_ISDIR(mode) -> dirs.add(f)
                     OsConstants.S_ISREG(mode) -> {
                         stats.files++
-                        if (patchFile(f, mode, old, new, pathsOnly, release)) stats.patchedFiles++
+                        if (patchFile(f, mode, patterns, new, pathsOnly)) stats.patchedFiles++
                         if (stats.files % 500 == 0) onProgress?.invoke(stats.files)
                     }
                 }
@@ -104,7 +111,8 @@ object TermuxRelocation {
 
     private fun relink(link: File, newPackage: String, pathsOnly: Boolean, releasePaths: Boolean): Boolean {
         val target = try { Os.readlink(link.absolutePath) } catch (_: Exception) { return false }
-        if (!target.contains(TERMUX_PACKAGE) && !(releasePaths && target.contains(RELEASE_PACKAGE))) return false
+        val patterns = sourcePatterns(newPackage, releasePaths)
+        if (patterns.none { target.contains(String(it, Charsets.US_ASCII)) }) return false
         val newTarget = String(rewrite(target.toByteArray(Charsets.UTF_8), newPackage, pathsOnly, releasePaths), Charsets.UTF_8)
         if (newTarget == target) return false
         return try {
@@ -117,10 +125,10 @@ object TermuxRelocation {
         }
     }
 
-    private fun patchFile(file: File, mode: Int, old: ByteArray, new: ByteArray, pathsOnly: Boolean, release: ByteArray?): Boolean {
+    private fun patchFile(file: File, mode: Int, patterns: List<ByteArray>, new: ByteArray, pathsOnly: Boolean): Boolean {
         if (file.extension.lowercase() in SKIPPED_EXTENSIONS) return false
         return try {
-            val offsets = findAll(file, old, pathsOnly, release)
+            val offsets = findAll(file, patterns, pathsOnly)
             if (offsets.isEmpty()) return false
             val perms = mode and 0xFFF
             val ownerWritable = (perms and 0x80) != 0 // S_IWUSR
@@ -143,25 +151,38 @@ object TermuxRelocation {
     }
 
     /**
-     * [bytes] with every "com.termux" replaced by [newPackage], except those followed by a [KEPT_SUFFIXES] entry and,
-     * with [pathsOnly], those not right after a "/". With [releasePaths] (and [newPackage] not the release one), every
-     * "ai.picodev" right after a "/" too.
+     * Every package name baked into a bootstrap that has to become [newPackage]: Termux packages, the rootfs built
+     * for the old app, and (for a debug install) the release app. All are 10 bytes, so rewriting never moves bytes.
+     */
+    private fun sourcePatterns(newPackage: String, releasePaths: Boolean): List<ByteArray> =
+        ArrayList<ByteArray>(3).apply {
+            add(TERMUX_BYTES)
+            add(LEGACY_PACKAGE.toByteArray(Charsets.US_ASCII))
+            if (releasePaths && newPackage != RELEASE_PACKAGE) add(RELEASE_PACKAGE.toByteArray(Charsets.US_ASCII))
+        }
+
+    /**
+     * [bytes] with every source package name replaced by [newPackage], except "com.termux" followed by a
+     * [KEPT_SUFFIXES] entry and, with [pathsOnly], matches not right after a "/".
      */
     internal fun rewrite(bytes: ByteArray, newPackage: String, pathsOnly: Boolean = false, releasePaths: Boolean = false): ByteArray {
-        val old = TERMUX_PACKAGE.toByteArray(Charsets.US_ASCII)
         val new = newPackage.toByteArray(Charsets.US_ASCII)
-        val release = if (releasePaths && newPackage != RELEASE_PACKAGE) RELEASE_PACKAGE.toByteArray(Charsets.US_ASCII) else null
+        val sources = sourcePatterns(newPackage, releasePaths)
+        require(sources.all { it.size == new.size }) { "$newPackage must have the length of every source package" }
         val out = bytes.copyOf()
         var i = 0
-        while (i <= out.size - old.size) {
-            if (matchesAt(out, i, old)) {
+        while (i <= out.size - new.size) {
+            var matched = false
+            for (source in sources) {
+                if (!matchesAt(out, i, source)) continue
                 val inPath = !pathsOnly || (i > 0 && out[i - 1] == SLASH)
-                if (inPath && !keptAt(out, i + old.size, out.size)) System.arraycopy(new, 0, out, i, new.size)
-                i += old.size
-            } else if (release != null && matchesAt(out, i, release)) {
-                if (i > 0 && out[i - 1] == SLASH) System.arraycopy(new, 0, out, i, new.size)
-                i += release.size
-            } else i++
+                val kept = source.contentEquals(TERMUX_BYTES) && keptAt(out, i + new.size, out.size)
+                if (inPath && !kept) System.arraycopy(new, 0, out, i, new.size)
+                i += new.size
+                matched = true
+                break
+            }
+            if (!matched) i++
         }
         return out
     }
@@ -175,17 +196,19 @@ object TermuxRelocation {
     private fun keptAt(buf: ByteArray, at: Int, len: Int): Boolean =
         KEPT_SUFFIXES.any { s -> at + s.size <= len && matchesAt(buf, at, s) }
 
+    internal fun findAll(file: File, pattern: ByteArray, pathsOnly: Boolean = false, pathPattern: ByteArray? = null): List<Long> =
+        findAll(file, listOfNotNull(pattern, pathPattern), pathsOnly)
+
     /**
-     * Offsets of every [pattern] in [file] that is to be rewritten (not followed by a [KEPT_SUFFIXES] entry), read in
-     * chunks; "com.termux" cannot overlap itself, so matches never do. [pathPattern] (as long as [pattern], and not
-     * overlapping it either: "ai.picodev"), when given, is found in the same pass, only right after a "/".
+     * Offsets of every [patterns] match in [file] that is to be rewritten (only "com.termux" honours
+     * [KEPT_SUFFIXES]), read in chunks; the patterns are 10 bytes and cannot overlap themselves. With [pathsOnly],
+     * only matches right after a "/" count (the home folder holds the user's own files).
      */
-    internal fun findAll(file: File, pattern: ByteArray, pathsOnly: Boolean = false, pathPattern: ByteArray? = null): List<Long> {
+    internal fun findAll(file: File, patterns: List<ByteArray>, pathsOnly: Boolean = false): List<Long> {
+        require(patterns.isNotEmpty()) { "no patterns to find" }
         val result = ArrayList<Long>()
-        val n = pattern.size
-        val first = pattern[0]
-        require(pathPattern == null || pathPattern.size == n) { "the patterns must have the same length" }
-        val pathFirst: Byte = pathPattern?.get(0) ?: 0
+        val n = patterns.first().size
+        require(patterns.all { it.size == n }) { "the patterns must have the same length" }
         val buf = ByteArray(CHUNK + n - 1 + LOOKAHEAD)
         RandomAccessFile(file, "r").use { raf ->
             var base = 0L // file offset of buf[0]
@@ -199,14 +222,17 @@ object TermuxRelocation {
                 val last = if (eof) len - n else len - n - LOOKAHEAD
                 var i = 0
                 while (i <= last) {
-                    if (buf[i] == first && matchesAt(buf, i, pattern)) {
+                    var matched = false
+                    for (pattern in patterns) {
+                        if (buf[i] != pattern[0] || !matchesAt(buf, i, pattern)) continue
                         val inPath = !pathsOnly || (if (i > 0) buf[i - 1] else before) == SLASH
-                        if (inPath && !keptAt(buf, i + n, len)) result.add(base + i)
+                        val kept = pattern.contentEquals(TERMUX_BYTES) && keptAt(buf, i + n, len)
+                        if (inPath && !kept) result.add(base + i)
                         i += n
-                    } else if (pathPattern != null && buf[i] == pathFirst && matchesAt(buf, i, pathPattern)) {
-                        if ((if (i > 0) buf[i - 1] else before) == SLASH) result.add(base + i)
-                        i += n
-                    } else i++
+                        matched = true
+                        break
+                    }
+                    if (!matched) i++
                 }
                 if (eof) break
                 // the bytes not scanned yet (at most n-1+LOOKAHEAD) move to the start of the buffer

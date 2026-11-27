@@ -208,6 +208,8 @@ class LocalPtySession(
                 val home = LocalEnvironmentManager.getHomeDir(context)
                 val tmp = LocalEnvironmentManager.getTmpDir(context)
 
+                // repair an environment installed before the prefix/permission fix, before choosing a shell
+                LocalEnvironmentManager.ensureBootstrapRuntime(context)
                 LocalEnvironmentManager.ensureGlibcEnvironment(context)
                 LocalEnvironmentManager.ensureClaudeWrapper(context)
                 ai.picodev.data.adb.DeviceAccess.ensureTerminalCommands(context)
