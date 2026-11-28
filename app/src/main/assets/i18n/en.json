@@ -8561,8 +8561,7 @@
     "privateSpace.overview.locked": "Locked",
     "privateSpace.overview.notSetUp": "Not set up",
     "settings.switcherOverviewSettings.keepScrollPosition": "Remember scroll position",
-    "settings.switcherOverviewSettings.keepScrollPositionHint": "Opens where you left it. Off: it always opens at the top.",
-    "settings.troubleshoot": "Troubleshoot"
+    "settings.switcherOverviewSettings.keepScrollPositionHint": "Opens where you left it. Off: it always opens at the top."
   },
   "notes": {
     "settings.language.aiOff": "Segmented button: the agent picks its reply language",
