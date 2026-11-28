@@ -19,7 +19,7 @@ import ai.picodev.i18n.L
 
 /**
  * What the connected IDE bridge (local or on a server) says about itself:
- *  - its version, which must be the app's version (the bridge is built with the app's version.json),
+ *  - its version, which must be the app's version (the bridge bundled with this release keeps the beta number),
  *  - the Antigravity CLI (`agy`) on its machine: where it is, its `agy --version`, and a way to install it.
  */
 object BridgeInfo {
@@ -188,6 +188,8 @@ object BridgeInfo {
     /** `-1` when the bridge is older than the app, `1` when newer, `0` when equal. */
     fun compareBridgeToApp(bridge: String): Int {
         if (bridge == appVersion) return 0
+        // Pico Dev 1.0.0 ships the bridge built from the same beta source; keep its numbering, so the two match.
+        if (appVersion == PICO_DEV_RELEASE && bridge == BUNDLED_BRIDGE_VERSION) return 0
         // bridges built before versioning always reported a fixed "2.0.0": that is an old bridge, not a newer one
         if (bridge == LEGACY_VERSION) return -1
         return compareVersions(bridge, appVersion)
@@ -217,6 +219,8 @@ object BridgeInfo {
     // -------------------------------------------------------------------------------- "Later"
 
     private const val LEGACY_VERSION = "2.0.0"
+    private const val PICO_DEV_RELEASE = "1.0.0"
+    private const val BUNDLED_BRIDGE_VERSION = "2.0.5-beta.7"
 
     private val _snoozedFor = MutableStateFlow<String?>(null)
     /** The bridge version whose update dialog was answered with "Later". Lives only until the app process ends, so the dialog comes back on the next launch. */
