@@ -8,7 +8,7 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-private val termuxAm = rootProject.file("termux-am/app/src/main")
+private val termuxAm = rootProject.file("termux-am")
 
 android {
     namespace = "com.termux.termuxam"
