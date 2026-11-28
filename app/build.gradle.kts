@@ -462,8 +462,8 @@ val copyScriptsToAssets = tasks.register<Copy>("copyScriptsToAssets") {
 }
 
 tasks.named("preBuild") {
-  // Pico Dev ships the bridge binary extracted from the official beta APK instead of rebuilding it with Go.
-  dependsOn(deleteLegacyLinuxBridgeAsset, copyScriptsToAssets)
+  // Build the bridge from this checkout: its repository index path and version must match the app.
+  dependsOn(deleteLegacyLinuxBridgeAsset, copyScriptsToAssets, compressAgyIdeBridge)
 }
 
 
