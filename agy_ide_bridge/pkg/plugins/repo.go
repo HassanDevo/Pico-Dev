@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const repoIndex = "Plugins/Pico Dev-plugins.json"
+const repoIndex = "Plugins/picodev-plugins.json"
 
 // Repo is a public GitHub repository of plugin folders; Ref is a branch or tag, empty for the default branch.
 type Repo struct {
