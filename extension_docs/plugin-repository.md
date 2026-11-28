@@ -6,7 +6,8 @@ A plugin repository is a public GitHub repository with one folder per plugin. An
 
 ```
 my-plugins/                    ← repository root
-  picodev-plugins.json         ← index (recommended)
+  Plugins/
+    Plugins/picodev-plugins.json       ← index (recommended)
   youtube/                     ← one plugin per folder
     manifest.json
     worker.js
@@ -21,7 +22,7 @@ my-plugins/                    ← repository root
 
 Each plugin folder is exactly what you would otherwise ZIP: `manifest.json` at its top, plus a worker, `skills/`, or both. See [lifecycle.md](lifecycle.md) and [skills.md](skills.md).
 
-## The index: `picodev-plugins.json`
+## The index: `Plugins/picodev-plugins.json`
 
 ```json
 {
@@ -55,7 +56,7 @@ With `id` and `version` in the index, the app shows the whole list and update st
 
 ### Without an index
 
-If the repository has no `picodev-plugins.json`, every top-level folder that contains a `manifest.json` is listed as a plugin, and each manifest is read for its name, version and icon. This needs a GitHub API call that is limited to 60 per hour per network, so an index is more reliable.
+If the repository has no `Plugins/picodev-plugins.json`, every top-level folder that contains a `manifest.json` is listed as a plugin, and each manifest is read for its name, version and icon. This needs a GitHub API call that is limited to 60 per hour per network, so an index is more reliable.
 
 ## Icons
 
@@ -93,5 +94,5 @@ Installs remember which repository and folder they came from, so the plugin card
 
 1. Change the plugin's files.
 2. Raise `version` in its `manifest.json` (for example `1.2.0` → `1.3.0`).
-3. Raise the same `version` in `picodev-plugins.json`.
+3. Raise the same `version` in `Plugins/picodev-plugins.json`.
 4. Commit and push to the branch people added. Their app shows the update the next time it checks.
