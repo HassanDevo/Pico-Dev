@@ -775,17 +775,21 @@ object ReaManager {
         if (on) ReaWebBridge.start(context) else ReaWebBridge.stop()
     }
 
+    /** Whether website analysis with REA is on (the setting, readable before the REA page was opened). */
+    fun isWebEnabled(context: Context): Boolean =
+        context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(WEB_PREF, false)
+
     /**
      * A sentence for the browser MCP's instructions while website analysis is on: analyze with REA first. Reads the
      * setting directly, so it works before the REA page was opened.
      */
     fun browserMcpNote(context: Context): String {
-        val on = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(WEB_PREF, false)
-        if (!on) return ""
+        if (!isWebEnabled(context)) return ""
         return " Website analysis with REA is on: to analyze a website (structure, scripts, network, technologies, " +
             "accessibility, screenshots…), open it with these tools, then use REA's website tools (tool group \"web\", " +
             "DevTools endpoint http://127.0.0.1:${ReaWebBridge.DEFAULT_PORT}) for the analysis, screenshots included. " +
-            "Use these browser tools to open pages and act on them, and for anything REA could not do."
+            "Use these browser tools to open pages and act on them, and for anything REA could not do. The DevTools endpoint " +
+            "switches itself off when unused: call browser_rea_connect first if REA cannot connect."
     }
 
     // ---------------- MCP server settings (agent-neutral) ----------------

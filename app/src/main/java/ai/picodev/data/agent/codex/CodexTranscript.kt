@@ -168,6 +168,27 @@ class CodexTranscript(var threadId: String = "") {
         t.long("durationMs")?.let { turn.durationMs = it }
     }
 
+    /**
+     * A user message's pictures sent as data URLs are kept as files (see InlineMediaStore): each such part becomes
+     * {"type":"image", [STORED_IMAGE_KEY]: "file://…", "mime": …}, so the transcript doesn't hold their data for the
+     * whole chat. [o] itself when it has none (or they cannot be stored).
+     */
+    private fun withStoredImages(o: JsonObject): JsonObject {
+        val content = o["content"] as? JsonArray ?: return o
+        if (content.none { (it as? JsonObject)?.let { p -> p.str("type") == "image" && p.str("url")?.startsWith("data:") == true } == true }) return o
+        var changed = false
+        val parts = content.map { el ->
+            val p = el as? JsonObject ?: return@map el
+            val url = p.str("url")
+            if (p.str("type") != "image" || url == null || !url.startsWith("data:") || !url.contains(";base64,")) return@map p
+            val stored = ai.picodev.data.media.InlineMediaStore.storedDataUri(url)
+            if (stored == url) return@map p
+            changed = true
+            JsonObject(p - "url" + mapOf(STORED_IMAGE_KEY to JsonPrimitive(stored), "mime" to JsonPrimitive(url.substringAfter("data:").substringBefore(';'))))
+        }
+        return if (changed) JsonObject(o + ("content" to JsonArray(parts))) else o
+    }
+
     private fun itemOf(o: JsonObject): Item {
         val item = Item(o.str("id").orEmpty(), o.str("type").orEmpty(), o)
         fillFromJson(item, o)
@@ -175,8 +196,8 @@ class CodexTranscript(var threadId: String = "") {
     }
 
     private fun fillFromJson(item: Item, o: JsonObject) {
-        item.json = o
         item.type = o.str("type") ?: item.type
+        item.json = if (item.type == "userMessage") withStoredImages(o) else o
         o.long("startedAtMs")?.let { item.startedAt = it }
         o.long("completedAtMs")?.let { item.completedAt = it }
         when (item.type) {
@@ -467,7 +488,12 @@ class CodexTranscript(var threadId: String = "") {
                         mimeType = ai.picodev.data.files.AttachedFiles.mimeOf(path)
                     )
                 }
-                "image" -> p.str("url")?.takeIf { it.startsWith("data:") && it.contains(";base64,") }?.let { url ->
+                "image" -> p.str(STORED_IMAGE_KEY)?.let { file ->
+                    // kept as a file when the message came in (see withStoredImages)
+                    ai.picodev.domain.model.ChatAttachment(
+                        id = "${item.id}_img_$i", name = "image", path = "", isImage = true, localUri = file, mimeType = p.str("mime")
+                    )
+                } ?: p.str("url")?.takeIf { it.startsWith("data:") && it.contains(";base64,") }?.let { url ->
                     ai.picodev.domain.model.ChatAttachment(
                         id = "${item.id}_img_$i", name = "image", path = "", isImage = true,
                         mimeType = url.substringAfter("data:").substringBefore(';'), base64 = url.substringAfter(";base64,")
@@ -479,7 +505,7 @@ class CodexTranscript(var threadId: String = "") {
         val names = parts.mapNotNull { p ->
             when (p.str("type")) {
                 "localAudio" -> p.str("path")?.substringAfterLast('/')
-                "image" -> if (p.str("url")?.startsWith("data:") == true) null else "image"
+                "image" -> if (p.str("url")?.startsWith("data:") == true || p.str(STORED_IMAGE_KEY) != null) null else "image"
                 "mention" -> "@" + p.str("name").orEmpty()
                 "skill" -> "$" + p.str("name").orEmpty()
                 else -> null
@@ -689,3 +715,6 @@ class CodexTranscript(var threadId: String = "") {
         }
     }
 }
+
+/** Key of an image part of a user message whose data URL was kept as a file (its `file://` uri). */
+private const val STORED_IMAGE_KEY = "picodevStoredFile"

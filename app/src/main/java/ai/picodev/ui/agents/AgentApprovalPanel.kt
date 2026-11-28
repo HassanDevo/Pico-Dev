@@ -105,6 +105,7 @@ fun AgentApprovalPanel(
     onDenyAll: (() -> Unit)? = null
 ) {
     val item = items.firstOrNull() ?: return
+    ai.picodev.ui.components.FilterObscuredTouches() // an overlay can't tap "Allow" through this panel (Android 7-11)
     val accent = item.agent.accent()
     Surface(
         modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),

@@ -2396,7 +2396,7 @@ All files created here persist inside the application.
                 val pb = ProcessBuilder(sshKeygen.absolutePath, "-A")
                 pb.environment().putAll(localEnvironmentEnv(context))
                 val process = pb.start()
-                process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                process.waitForCompat(5, java.util.concurrent.TimeUnit.SECONDS)
                 log("Generated fresh OpenSSH host keys via ssh-keygen -A")
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to run ssh-keygen -A: ${e.message}")
@@ -2483,11 +2483,11 @@ All files created here persist inside the application.
                 onOutputLine?.invoke(line!!)
             }
 
-            val exited = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
+            val exited = process.waitForCompat(timeoutSeconds, TimeUnit.SECONDS)
             val durationMs = System.currentTimeMillis() - startTime
 
             if (!exited) {
-                process.destroyForcibly()
+                process.destroyForciblyCompat()
                 outputBuilder.append("\n[Process timed out after ${timeoutSeconds}s]")
                 LocalCommandResult(exitCode = 124, output = outputBuilder.toString().trim(), durationMs = durationMs)
             } else {
@@ -2651,9 +2651,9 @@ All files created here persist inside the application.
                 durationMs = System.currentTimeMillis() - startTime
             )
         } finally {
-            if (process.isAlive) {
+            if (process.isAliveCompat) {
                 try {
-                    process.destroyForcibly()
+                    process.destroyForciblyCompat()
                 } catch (_: Exception) {}
             }
         }
@@ -2725,9 +2725,9 @@ All files created here persist inside the application.
             withContext(Dispatchers.Main) { onLogLine(msg) }
             LocalCommandResult(1, msg, System.currentTimeMillis() - startTime)
         } finally {
-            if (process.isAlive) {
+            if (process.isAliveCompat) {
                 try {
-                    process.destroyForcibly()
+                    process.destroyForciblyCompat()
                 } catch (_: Exception) {}
             }
         }

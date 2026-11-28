@@ -187,7 +187,8 @@ class OpenCodeTranscript(var sessionId: String = "") {
                         id = "${id}_img_$i", name = f.str("name") ?: "image", path = "", isImage = true, mimeType = mime, base64 = data
                     )
                 }
-                msg.images = images
+                // their data is kept as files: the message holds only the paths for the rest of the chat
+                msg.images = ai.picodev.data.media.InlineMediaStore.stored(images)
                 msg.attachmentNames = files.filter { f -> !(f.str("mime").orEmpty().startsWith("image/") && !f.str("data").isNullOrBlank()) }
                     .mapNotNull { it.str("name") ?: it.str("uri")?.substringAfterLast('/') }
                 messages[id] = msg

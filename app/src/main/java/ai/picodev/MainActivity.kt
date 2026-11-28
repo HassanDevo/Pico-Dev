@@ -26,6 +26,7 @@ import ai.picodev.ui.chat.ChatViewModel
 import ai.picodev.ui.chat.ChatViewModelHolder
 import ai.picodev.ui.ide.IdeScreen
 import ai.picodev.ui.components.pageSnapshotSource
+import ai.picodev.ui.components.hiddenWhileOffscreen
 import ai.picodev.i18n.L
 
 enum class AppViewMode {
@@ -36,7 +37,9 @@ enum class AppViewMode {
     NOTES,
     FILES,
     /** The Run screen: a folder's commands and their live output (runs keep going on other screens) */
-    RUN
+    RUN,
+    /** Private Space: passwords, API keys, 2FA and private notes, encrypted; composed only while shown */
+    PRIVATE_SPACE
 }
 
 class MainActivity : ComponentActivity() {
@@ -97,6 +100,8 @@ class MainActivity : ComponentActivity() {
         // chat list they show is kept up to date from here on
         if (savedInstanceState == null) ai.picodev.data.homescreen.HomeRouter.handle(this, chatViewModel, intent)
         ai.picodev.data.homescreen.HomeSnapshot.start(application, chatViewModel)
+        // links are signed one by one now: shortcuts and widgets made before get their signature once
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) { ai.picodev.data.homescreen.HomeLinks.resignOnce(applicationContext) }
         ai.picodev.ui.homescreen.HomeWidgets.publishPreviews(this)
         // Voice call tile / shortcut: the floating call window stays away while this screen is up; the long-press menu
         // of the app icon gets "Voice call"
@@ -118,6 +123,14 @@ class MainActivity : ComponentActivity() {
                 moveTaskToBack(true)
             }
         })
+
+        // Android 7-8 focus the first focusable view on their own (when the window opens and every time focus is
+        // cleared). Inside Compose that is the first text field on screen, e.g. the Browser's address bar, whose search
+        // panel and keyboard then open by themselves and come back after every Back. The plain content frame takes that
+        // focus instead, so nothing is focused until the user taps, as on Android 9+.
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.P) {
+            findViewById<android.view.View>(android.R.id.content).isFocusableInTouchMode = true
+        }
 
         setContent {
             val initialThemeMode = remember { chatViewModel.authPreferences.getThemeModeSync() }
@@ -208,6 +221,8 @@ class MainActivity : ComponentActivity() {
             // The page overview opens from a tap on the switcher's pill ("SWITCHER"), from its own pill ("OWN_PILL"), or is off
             val pageOverviewMode by switcherPrefs.pageOverviewMode
                 .collectAsState(initial = switcherPrefs.getPageOverviewModeSync())
+            val pageOverviewKeepScroll by switcherPrefs.pageOverviewKeepScroll
+                .collectAsState(initial = switcherPrefs.getPageOverviewKeepScrollSync())
             val switcherTapOpensOverview = pageOverviewMode == "SWITCHER"
             val overviewPillEnabled = pageOverviewMode == "OWN_PILL"
             val floatingSwitcherScale by switcherPrefs.floatingSwitcherScale
@@ -233,9 +248,29 @@ class MainActivity : ComponentActivity() {
             var pendingUpdateInfo by remember { mutableStateOf<ai.picodev.data.updater.AppUpdateInfo?>(null) }
             val updateManager = remember { ai.picodev.data.updater.AppUpdateManager(this@MainActivity) }
 
+            var appUpdateCheckDone by remember { mutableStateOf(false) }
+
             LaunchedEffect(Unit) {
                 updateManager.checkForUpdates().onSuccess { info ->
                     pendingUpdateInfo = info
+                }
+                appUpdateCheckDone = true
+            }
+
+            // The app in a community language: its update is looked for in the background each time the app comes to the
+            // foreground (at most every 30 minutes), and offered only once the app's own check is done and its dialog is
+            // closed (one dialog at a time)
+            androidx.lifecycle.compose.LifecycleEventEffect(androidx.lifecycle.Lifecycle.Event.ON_START) {
+                ai.picodev.i18n.LanguageUpdateCheck.start(this@MainActivity)
+            }
+            val languageUpdateOffer = ai.picodev.i18n.LanguageUpdateCheck.offer
+            var languageUpdateTurn by remember { mutableStateOf(false) }
+            LaunchedEffect(appUpdateCheckDone, pendingUpdateInfo == null, languageUpdateOffer) {
+                languageUpdateTurn = false
+                if (appUpdateCheckDone && pendingUpdateInfo == null && languageUpdateOffer != null) {
+                    // a moment after the app's dialog closed, so it doesn't look like the same dialog coming back
+                    kotlinx.coroutines.delay(600)
+                    languageUpdateTurn = true
                 }
             }
 
@@ -380,6 +415,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.CHAT, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.CHAT)
                                 ) {
                                     ChatScreen(
                                         viewModel = chatViewModel,
@@ -418,6 +455,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.IDE, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.IDE)
                                 ) {
                                     IdeScreen(
                                         viewModel = chatViewModel,
@@ -451,6 +490,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.TERMINAL, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.TERMINAL)
                                 ) {
                                     if (currentViewMode == AppViewMode.TERMINAL || (hasEverOpenedTerminal && terminalSessions.isNotEmpty())) {
                                         ai.picodev.ui.components.LocalTerminalContent(
@@ -480,6 +521,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.BROWSER, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.BROWSER)
                                 ) {
                                     BrowserScreen(
                                         isVisible = currentViewMode == AppViewMode.BROWSER,
@@ -501,6 +544,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.NOTES, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.NOTES)
                                 ) {
                                     ai.picodev.ui.notes.NotesScreen(
                                         isVisible = currentViewMode == AppViewMode.NOTES,
@@ -524,6 +569,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.FILES, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.FILES)
                                 ) {
                                     if (hasEverOpenedFiles) {
                                         ai.picodev.ui.files.FileExplorer(
@@ -580,6 +627,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                         // its drawing, for its picture in the page overview (without the floating pills over it)
                                         .pageSnapshotSource(AppViewMode.RUN, pageOverviewInUse)
+                                        // hidden: out of TalkBack's and the keyboard's reach (draws the same)
+                                        .hiddenWhileOffscreen(currentViewMode == AppViewMode.RUN)
                                 ) {
                                     if (hasEverOpenedRun) {
                                         ai.picodev.ui.run.RunScreen(
@@ -591,6 +640,19 @@ class MainActivity : ComponentActivity() {
                                             onSendToChat = {
                                                 previousViewMode = currentViewMode
                                                 currentViewMode = AppViewMode.CHAT
+                                            }
+                                        )
+                                    }
+                                }
+
+                                // Private Space (passwords, keys, private notes): composed only while it is the page shown, so nothing of
+                                // it exists off screen, and never pictured for the page overview (PageSnapshots skips it)
+                                if (currentViewMode == AppViewMode.PRIVATE_SPACE) {
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        ai.picodev.ui.privatespace.PrivateSpaceScreen(
+                                            onClose = {
+                                                currentViewMode =
+                                                    if (previousViewMode == AppViewMode.PRIVATE_SPACE) AppViewMode.CHAT else previousViewMode
                                             }
                                         )
                                     }
@@ -662,6 +724,7 @@ class MainActivity : ComponentActivity() {
                                         "notes" -> AppViewMode.NOTES
                                         "files" -> AppViewMode.FILES
                                         "run" -> AppViewMode.RUN
+                                        "private" -> AppViewMode.PRIVATE_SPACE
                                         else -> null
                                     }
                                     when {
@@ -687,7 +750,8 @@ class MainActivity : ComponentActivity() {
                                     },
                                     // a tile held and dragged to a new place: the switcher's order (its panel and Settings follow)
                                     onReorder = { order -> chatViewModel.setFloatingSwitcherItems(order) },
-                                    onDismiss = { showPageOverview = false }
+                                    onDismiss = { showPageOverview = false },
+                                    keepScroll = pageOverviewKeepScroll
                                 )
                                 ai.picodev.ui.components.FloatingSwitcherWidget(
                                     currentViewMode = currentViewMode,
@@ -728,6 +792,10 @@ class MainActivity : ComponentActivity() {
                                     onNavigateToRun = {
                                         previousViewMode = currentViewMode
                                         currentViewMode = AppViewMode.RUN
+                                    },
+                                    onNavigateToPrivateSpace = {
+                                        previousViewMode = currentViewMode
+                                        currentViewMode = AppViewMode.PRIVATE_SPACE
                                     },
                                     onNavigateBack = switcherNavigateBack,
                                     onPositionSaved = { x, y ->
@@ -821,6 +889,9 @@ class MainActivity : ComponentActivity() {
                                 // Jarvis: voice orb (only when Jarvis is turned on in Settings)
                                 ai.picodev.ui.jarvis.JarvisOverlay()
 
+                                // questions only the user may answer (Jarvis' looser approval modes, the AI reply language…)
+                                ai.picodev.ui.components.UserConfirmHost()
+
                                 // Real-time floating live diagnostics overlay (JVM Threads, OkHttp queues, connections, lag)
                                 if (isFloatingDiagnosticsEnabled) {
                                     ai.picodev.ui.components.FloatingDiagnosticsOverlay(
@@ -837,11 +908,15 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
 
-                                // Gemmy: floating cartoon buddy (drag/fling, tap, double-tap, long-press menu; reacts to the agent working).
-                                // Shown after its one-time intro was answered and while on in Settings → Appearance.
-                                ai.picodev.ui.components.GemmyOverlay(
+                                // The floating pet (Gemmy and friends: drag/fling, tap, double-tap, long-press menu; reacts to the
+                                // agent working). Shown after its one-time intro was answered and while on in Settings → Pets.
+                                ai.picodev.ui.components.PetOverlay(
                                     prefs = chatViewModel.authPreferences,
-                                    agentWorking = chatViewModel.isCurrentChatActivelyRunning
+                                    agentWorking = chatViewModel.isCurrentChatActivelyRunning,
+                                    onOpenSettings = {
+                                        chatViewModel.requestViewMode("CHAT")
+                                        chatViewModel.requestSettingsSection("PETS")
+                                    }
                                 )
 
                                 // Global Network Inspector Dialog
@@ -858,6 +933,15 @@ class MainActivity : ComponentActivity() {
                                         onDismiss = { pendingUpdateInfo = null }
                                     )
                                 }
+
+                                // A newer version of the community language on screen (never together with the app's)
+                                if (languageUpdateTurn && pendingUpdateInfo == null) languageUpdateOffer?.let { offer ->
+                                    ai.picodev.ui.updater.LanguageUpdateDialog(
+                                        offer = offer,
+                                        onNotNow = { ai.picodev.i18n.LanguageUpdateCheck.notNow(this@MainActivity) },
+                                        onDone = { ai.picodev.i18n.LanguageUpdateCheck.clear() }
+                                    )
+                                }
                             }
                         }
                     }
@@ -866,6 +950,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
+    // A view the app does not own (e.g. one the system puts in the window) can leave state that
+    // cannot be read back on recreate; drop the old view state instead of crashing. Compose
+    // rememberSaveable state is restored separately (SavedStateRegistry), so it is not lost.
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        try {
+            super.onRestoreInstanceState(savedInstanceState)
+        } catch (e: RuntimeException) {
+            android.util.Log.w("MainActivity", "Skipped restoring view state", e)
+        }
+    }
 
     override fun onResume() {
         super.onResume()
@@ -901,19 +996,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** The Jarvis Quick Settings tile opened the app: start listening once the window is in front. */
+    /**
+     * The Jarvis Quick Settings tile opened the app: start listening once the window is in front. Only for an intent
+     * the app signed: this screen is exported, and another app must not switch the microphone on.
+     */
     private fun handleJarvisIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(ai.picodev.data.jarvis.JarvisTileService.EXTRA_TALK, false) != true) return
         intent.removeExtra(ai.picodev.data.jarvis.JarvisTileService.EXTRA_TALK)
+        if (!ai.picodev.data.security.AppIntentKey.isTrusted(this, intent, ai.picodev.data.security.AppIntentKey.JARVIS_TALK)) return
         window.decorView.postDelayed({
             if (ai.picodev.data.jarvis.JarvisController.isAttached) ai.picodev.data.jarvis.JarvisController.startListening()
         }, 700)
     }
 
-    /** The Voice call tile or shortcut opened the app: the chat screen starts the call once the server is up. */
+    /** The Voice call tile or shortcut opened the app: the chat screen starts the call once the server is up (signed only). */
     private fun handleVoiceCallIntent(intent: Intent?) {
         if (intent?.getBooleanExtra(ai.picodev.data.voice.VoiceCallLauncher.EXTRA_START_CALL, false) != true) return
         intent.removeExtra(ai.picodev.data.voice.VoiceCallLauncher.EXTRA_START_CALL)
+        if (!ai.picodev.data.security.AppIntentKey.isTrusted(this, intent, ai.picodev.data.security.AppIntentKey.VOICE_CALL)) return
         ai.picodev.data.voice.VoiceCallLauncher.requestStart()
     }
 
@@ -927,7 +1027,11 @@ class MainActivity : ComponentActivity() {
         if (action != Intent.ACTION_VIEW && action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
         val share = ai.picodev.data.files.IncomingShare
         // links (OAuth callbacks, web pages) are not files
-        val uris = share.urisOf(intent).filter { it.scheme == "content" || it.scheme == "file" }
+        val fileUris = share.urisOf(intent).filter { it.scheme == "content" || it.scheme == "file" }
+        // another app can't make Pico Dev open Pico Dev's own private files (logins, keys, settings) for it
+        val uris = fileUris.filter { ai.picodev.data.files.IncomingUriGuard.allowed(this, intent, it) }
+        if (uris.size < fileUris.size) ai.picodev.data.files.IncomingUriGuard.toastRefused(this)
+        if (fileUris.isNotEmpty() && uris.isEmpty()) return
         if (uris.isEmpty()) {
             if (action == Intent.ACTION_SEND) {
                 val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
@@ -940,13 +1044,16 @@ class MainActivity : ComponentActivity() {
             val item = items.first()
             val lower = item.name.lowercase()
             if (lower.endsWith(".picodev")) {
-                chatViewModel.loadSharedConversationFromUri(this, item.uri!!)
+                chatViewModel.loadSharedConversationFromUri(this, item.uri!!, item.name)
                 return
             }
             // a mini app package opened with / shared to "Pico Dev" instead of "Mini app installer": install it
             if (lower.endsWith(".agapp") || intent.type == ai.picodev.data.miniapps.MiniAppSigning.MIME) {
-                startActivity(Intent(this, ai.picodev.ui.miniapps.MiniAppInstallActivity::class.java).setAction(Intent.ACTION_VIEW)
-                    .setDataAndType(item.uri, ai.picodev.data.miniapps.MiniAppSigning.MIME).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                val install = Intent(this, ai.picodev.ui.miniapps.MiniAppInstallActivity::class.java).setAction(Intent.ACTION_VIEW)
+                    .setDataAndType(item.uri, ai.picodev.data.miniapps.MiniAppSigning.MIME).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                // a private uri got here only from Pico Dev itself (checked above): the installer may open it too
+                if (ai.picodev.data.files.IncomingUriGuard.isPicoDevPrivate(this, item.uri!!)) ai.picodev.data.files.IncomingUriGuard.signOwn(this, install)
+                startActivity(install)
                 return
             }
             // exported trajectories can arrive without the .picodev name: peek at the header
@@ -964,7 +1071,7 @@ class MainActivity : ComponentActivity() {
                     ""
                 }
                 if (header.contains("\"picodev_trajectory\"")) {
-                    chatViewModel.loadSharedConversationFromUri(this, item.uri!!)
+                    chatViewModel.loadSharedConversationFromUri(this, item.uri!!, item.name)
                     return
                 }
             }

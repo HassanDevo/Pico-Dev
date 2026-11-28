@@ -83,6 +83,10 @@ import ai.picodev.ui.components.ClaudeAccent
 import kotlinx.coroutines.delay
 import ai.picodev.i18n.L
 
+/** Provider chips of the Claude model sheet besides "@provider": every model, and the Claude plan's own. */
+private const val FILTER_ALL = "all"
+private const val FILTER_PLAN = "claude"
+
 /** Accent of the model sheet's n-th plan group: Claude's own for "All models", then one hue per model limit. */
 private fun claudeGroupColor(index: Int): Color = when (index) {
     0 -> ClaudeAccent
@@ -288,6 +292,8 @@ fun ClaudeModelSheet(
     val groupOverrides by ModelGroupPrefs.overrides(QuotaAgent.CLAUDE).collectAsState()
     val pillWindow by ModelGroupPrefs.pillWindow(QuotaAgent.CLAUDE).collectAsState()
     var editingGroups by remember { mutableStateOf(false) }
+    // the provider chip last picked; null until one is picked (the Claude plan is shown then)
+    var providerFilter by remember { mutableStateOf<String?>(null) }
     // plan limits as groups: "All models" (5h + 7d) and one per model with its own weekly share (Fable)
     val quotaGroups = remember(usage, liveLimits) { ClaudeQuotaGroups.groups(usage, liveLimits) }
 
@@ -317,6 +323,28 @@ fun ClaudeModelSheet(
             val customSections = providers.filter { it.models.isNotEmpty() }
             val customCount = customSections.sumOf { it.models.size }
 
+            // provider chips once a custom provider has models: All, the Claude plan, then each provider
+            val chips = if (customSections.isEmpty()) emptyList() else buildList {
+                add(ai.picodev.ui.models.ProviderChip(FILTER_ALL, L.models.providerFilter.all, rows.size + customCount))
+                add(ai.picodev.ui.models.ProviderChip(FILTER_PLAN, L.common.claude, rows.size, ClaudeChatBackend.providerOf(selected).isEmpty()))
+                customSections.forEach { p ->
+                    add(ai.picodev.ui.models.ProviderChip("@${p.id}", p.name, p.models.size, ClaudeChatBackend.providerOf(selected) == p.id))
+                }
+            }
+            val shownFilter = when {
+                chips.isEmpty() -> FILTER_ALL
+                chips.any { it.key == providerFilter } -> providerFilter!!
+                signedOut -> FILTER_ALL
+                else -> FILTER_PLAN
+            }
+            // the Claude plan's models and its usage (5h / 7d, groups) show under All and Claude only
+            val showPlan = shownFilter == FILTER_ALL || shownFilter == FILTER_PLAN
+            val shownCustom = when (shownFilter) {
+                FILTER_ALL -> customSections
+                FILTER_PLAN -> emptyList()
+                else -> customSections.filter { "@${it.id}" == shownFilter }
+            }
+
             AgentSheetHeader(
                 AgentKind.CLAUDE,
                 L.common.selectModel,
@@ -332,7 +360,7 @@ fun ClaudeModelSheet(
                     backend.refreshInfo(force = true)
                     account.refreshUsage(force = true, recheckSignIn = true)
                 },
-                actions = if (quotaGroups.size > 1 && rows.isNotEmpty()) {
+                actions = if (quotaGroups.size > 1 && rows.isNotEmpty() && showPlan) {
                     { ai.picodev.ui.models.EditGroupsAction(editingGroups, ClaudeAccent) { editingGroups = !editingGroups } }
                 } else null
             )
@@ -345,9 +373,16 @@ fun ClaudeModelSheet(
                 )
             }
 
+            if (chips.isNotEmpty()) {
+                ai.picodev.ui.models.ProviderFilterRow(chips, shownFilter, ClaudeAccent, Modifier.padding(top = 10.dp)) {
+                    providerFilter = it
+                    if (it != FILTER_ALL && it != FILTER_PLAN) editingGroups = false
+                }
+            }
+
             // plan limits sit on each group's header below; here: which one the chat's model pill shows
             val planGroups = quotaGroups.takeIf { rows.isNotEmpty() }.orEmpty()
-            when {
+            if (showPlan) when {
                 editingGroups -> ai.picodev.ui.models.EditGroupsBanner(ClaudeAccent) { editingGroups = false }
                 planGroups.any { it.fiveHour != null } ->
                     ai.picodev.ui.models.PillWindowRow(pillWindow, ClaudeAccent) { ModelGroupPrefs.setPillWindow(QuotaAgent.CLAUDE, it) }
@@ -398,6 +433,7 @@ fun ClaudeModelSheet(
                 }
             }
 
+            if (showPlan) {
             if (planGroups.isEmpty() || signedOut) {
                 SheetSectionLabel(if (customSections.isEmpty()) L.claude.chatControls.model else L.common.claude, trailing = if (customSections.isEmpty()) null else L.claude.chatControls.yourClaudePlan)
             }
@@ -464,8 +500,10 @@ fun ClaudeModelSheet(
                 }
             }
 
-            // one section per custom provider (Settings → Claude Code → Custom providers)
-            customSections.forEach { p ->
+            }
+
+            // one section per custom provider (Settings → Claude Code → Custom providers), or the picked one
+            shownCustom.forEach { p ->
                 SheetSectionLabel(p.name, trailing = L.claude.chatControls.customProvider)
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     p.models.forEach { m ->

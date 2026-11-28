@@ -180,7 +180,90 @@ func (m *Manager) writeConfig() error {
 	if servers, err := m.loadMcp(); err == nil && len(servers) > 0 {
 		cfg["mcp"] = map[string]interface{}{"servers": servers}
 	}
+	// skills turned off in the app: OpenCode's "skill.use" deny policy takes them out of every chat
+	var policies []map[string]string
+	for _, id := range m.loadTurnedOff("skill") {
+		policies = append(policies, map[string]string{"action": "skill.use", "resource": id, "effect": "deny"})
+	}
+	if len(policies) > 0 {
+		cfg["policies"] = policies
+	}
 	return writePrivate(m.configPath(), cfg)
+}
+
+// Skills turned off in the app, kept in the bridge's config like the custom providers. OpenCode's skill id is the
+// skill's folder name. (The same store is used for MCP servers' "mcp.use" policy by the MCP-page batch.)
+
+func (m *Manager) turnedOffPath(kind string) string {
+	if kind == "mcp" {
+		return filepath.Join(m.dataDir(), "disabled_mcp.json")
+	}
+	return filepath.Join(m.dataDir(), "disabled_skills.json")
+}
+
+// loadTurnedOff reads the turned-off ids of [kind] (skill | mcp), sorted (the caller holds provMu).
+func (m *Manager) loadTurnedOff(kind string) []string {
+	data, err := os.ReadFile(m.turnedOffPath(kind))
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	if json.Unmarshal(data, &ids) != nil {
+		return nil
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (m *Manager) turnedOff(kind string) map[string]bool {
+	m.provMu.Lock()
+	defer m.provMu.Unlock()
+	out := map[string]bool{}
+	for _, id := range m.loadTurnedOff(kind) {
+		out[id] = true
+	}
+	return out
+}
+
+// setTurnedOff turns [id] of [kind] off or on for every OpenCode chat; a running server reloads its config.
+func (m *Manager) setTurnedOff(ctx context.Context, kind, id string, off bool) error {
+	m.provMu.Lock()
+	set := map[string]bool{}
+	for _, s := range m.loadTurnedOff(kind) {
+		set[s] = true
+	}
+	if set[id] == off {
+		m.provMu.Unlock()
+		return nil
+	}
+	if off {
+		set[id] = true
+	} else {
+		delete(set, id)
+	}
+	ids := make([]string, 0, len(set))
+	for s := range set {
+		ids = append(ids, s)
+	}
+	sort.Strings(ids)
+	err := writePrivate(m.turnedOffPath(kind), ids)
+	m.provMu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := m.writeConfig(); err != nil {
+		return err
+	}
+	m.reloadQuietly(ctx)
+	return nil
+}
+
+// DisabledSkills is the set of skill ids turned off in the app.
+func (m *Manager) DisabledSkills() map[string]bool { return m.turnedOff("skill") }
+
+// SetSkillEnabled turns skill [id] off or on for every OpenCode chat.
+func (m *Manager) SetSkillEnabled(ctx context.Context, id string, enabled bool) error {
+	return m.setTurnedOff(ctx, "skill", id, !enabled)
 }
 
 // reasoningField is where an OpenAI-compatible endpoint streams a model's thinking: OpenRouter sends "reasoning",

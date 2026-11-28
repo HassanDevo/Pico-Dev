@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Shuffle
@@ -189,9 +190,14 @@ internal fun ServersSubScreen(
     var remote by remember { mutableStateOf(AuthPreferences.currentRemoteMode) }
     // only with remote: reach the server's bridge/hub through the SSH connection instead of a domain or open ports
     var tunnel by remember { mutableStateOf(AuthPreferences.currentRemoteMode && AuthPreferences.currentRemoteTunnel) }
+    // a direct http:// address on the network: (hub, bridge, host) waiting for the user's typed OK, and the host they OK'd
+    var clearTextAsk by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    var clearHostAccepted by remember { mutableStateOf<String?>(AuthPreferences.hostOf(AuthPreferences.currentBridgeHttpUrl).takeIf {
+        AuthPreferences.currentRemoteMode && !AuthPreferences.currentRemoteTunnel && AuthPreferences.currentBridgeHttpUrl.startsWith("http://") }) }
     // on this phone: the Termux environment or the rooted Ubuntu chroot
     var phoneChroot by remember { mutableStateOf(authPrefs.isChrootModeSync()) }
     var showFactoryReset by remember { mutableStateOf(false) }
+    var confirmNewPhoneKey by remember { mutableStateOf(false) }
     var hubText by remember { mutableStateOf(currentHubUrl.ifBlank { AuthPreferences.DEFAULT_HUB_URL }) }
     var bridgeText by remember { mutableStateOf(currentBridgeUrl.ifBlank { AuthPreferences.DEFAULT_BRIDGE_HTTP_URL }) }
 
@@ -611,6 +617,29 @@ internal fun ServersSubScreen(
                 ) { Text(L.common.delete, fontWeight = FontWeight.Bold) }
             },
             dismissButton = { TextButton(onClick = { profileToDelete = null }) { Text(L.common.cancel) } },
+            shape = RoundedCornerShape(16.dp), containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
+
+    if (confirmNewPhoneKey) {
+        AlertDialog(
+            onDismissRequest = { confirmNewPhoneKey = false },
+            title = { Text(L.settings.serversSettings.makeANewKey, fontWeight = FontWeight.Bold, fontSize = 17.sp) },
+            text = { Text(L.settings.serversSettings.thePicoDevMcpServersYouAdded, fontSize = 13.5.sp) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmNewPhoneKey = false
+                        ai.picodev.data.remote.LocalServerAuth.rotate(context)
+                        // what the app hands the key to itself follows; the agents' MCP servers are left for the user to add again
+                        coroutineScope.launch(Dispatchers.IO) { runCatching { ai.picodev.data.adb.DeviceAccess.ensureTerminalCommands(context) } }
+                        ai.picodev.ui.browser.BrowserExtensionManager.instance.restartHost()
+                        Toast.makeText(context, L.settings.serversSettings.newKeyMadeRemoveThePicoDev, Toast.LENGTH_LONG).show()
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                ) { Text(L.settings.serversSettings.makeNewKey, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = { TextButton(onClick = { confirmNewPhoneKey = false }) { Text(L.common.cancel) } },
             shape = RoundedCornerShape(16.dp), containerColor = MaterialTheme.colorScheme.surface
         )
     }
@@ -1196,8 +1225,7 @@ internal fun ServersSubScreen(
                     }
                     OutlinedButton(
                         onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                            clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("Framed Security Header", framedHeader))
+                            ai.picodev.data.security.SecretClipboard.copy(context, "Framed Security Header", framedHeader)
                             Toast.makeText(context, L.settings.serversSettings.copiedFramedheaderToClipboard(framedHeader), Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)
@@ -1208,10 +1236,97 @@ internal fun ServersSubScreen(
             }
         }
 
+        // ----- Phone tools key (LocalServerAuth): the other direction, agents -> this phone's MCP / REST server -----
+        Card(Modifier.fillMaxWidth(), RoundedCornerShape(14.dp), CardDefaults.cardColors(containerColor = cardBg), border = cardBorder) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Key, null, tint = ClaudeTerracotta, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(L.settings.serversSettings.phoneToolsKey, fontSize = 14.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text(L.settings.serversSettings.protectsThisPhonesToolsAgentsSend, fontSize = 11.5.sp, color = subtle)
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(onClick = { confirmNewPhoneKey = true }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+                    Icon(Icons.Outlined.Shuffle, null, modifier = Modifier.size(15.dp)); Spacer(Modifier.width(6.dp)); Text(L.settings.serversSettings.newKey, fontSize = 12.sp)
+                }
+            }
+        }
+
         saveFeedback?.let {
             Surface(Modifier.fillMaxWidth(), RoundedCornerShape(8.dp), color = (if (saveIsError) Color.Red else QuotaGreen).copy(alpha = 0.12f)) {
                 Text(it, fontSize = 12.sp, color = if (saveIsError) Color.Red else QuotaGreen, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(10.dp))
             }
+        }
+
+        fun saveAll(hub: String, bridge: String) {
+            hubText = hub
+            bridgeText = bridge
+            onSaveServerUrls(hub, bridge)
+            val tokenToSave = if (securityToken.length == AuthPreferences.TOKEN_LENGTH) securityToken else AuthPreferences.generateRandomToken()
+            securityToken = tokenToSave
+            coroutineScope.launch {
+                authPrefs.saveSecurityToken(tokenToSave)
+                val wasChroot = authPrefs.isChrootModeSync()
+                authPrefs.saveRemoteModeSync(remote)
+                authPrefs.saveRemoteTunnelSync(remote && tunnel)
+                if (!remote) {
+                    if (phoneChroot) ai.picodev.data.local.chroot.ChrootManager.activeInstall(context)?.let {
+                        ai.picodev.data.local.chroot.ChrootManager.activate(context, it)
+                    } else ai.picodev.data.local.chroot.ChrootManager.useTermux(context)
+                }
+                // the chroot's bridge outlives the app: stop it when the agents no longer run there
+                if (wasChroot && (remote || !phoneChroot)) ai.picodev.data.local.chroot.ChrootManager.stopBridge(context)
+                if (remote) {
+                    authPrefs.saveSshSettings(sshHost.trim(), sshPort.toIntOrNull() ?: 22, sshUser.trim(), sshPass)
+                    authPrefs.saveSshKeySync(sshKey, sshPassphrase)
+                    authPrefs.saveRemoteBinariesSync(remoteBridgeBin, remoteAgyBin, remoteClaudeBin, remoteOpenCodeBin, remoteCodexBin)
+                    authPrefs.saveRemoteInstallDirSync(remoteInstallDir)
+                    authPrefs.saveRemoteListenSync(listenBridge, listenHub, listenBind)
+                    authPrefs.saveEdgeHeaderSync(edgeName, edgeValue)
+                } else {
+                    authPrefs.saveAgyBridgeBinaryPath(bridgeBinPath.trim().ifBlank { authPrefs.getDefaultBridgeBinaryPath() })
+                    authPrefs.saveAgyBinaryPath(agyBinPath.trim().ifBlank { authPrefs.getDefaultAgyBinaryPath() })
+                    authPrefs.saveClaudeBinaryPath(claudeBinPath.trim().ifBlank { authPrefs.getDefaultClaudeBinaryPath() })
+                    authPrefs.saveOpenCodeBinaryPath(openCodeBinPath.trim().ifBlank { authPrefs.getDefaultOpenCodeBinaryPath() })
+                    authPrefs.saveCodexBinaryPath(codexBinPath.trim().ifBlank { authPrefs.getDefaultCodexBinaryPath() })
+                    authPrefs.saveChrootBinariesSync(chrootBridgeBin, chrootAgyBin, chrootClaudeBin, chrootOpenCodeBin, chrootCodexBin)
+                }
+            }
+            savedSnapshot = snapshot()
+            saveFeedback = L.settings.serversSettings.serverConnectionAndSecuritySettingsSaved
+            saveIsError = false
+            showRestartDialog = true
+        }
+
+        clearTextAsk?.let { (askHub, askBridge, host) ->
+            val tailscale = Regex("^100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.").containsMatchIn(host)
+            var typed by remember(host) { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { clearTextAsk = null },
+                title = { ai.picodev.ui.components.FilterObscuredTouches(); Text(L.settings.serversSettings.sendTheBridgeSecretUnencrypted) },
+                text = {
+                    Column {
+                        Text(if (tailscale) L.settings.serversSettings.addressIsInTailscalesRangeThe(host) else L.settings.serversSettings.addressIsAPlainHttpAddress(host))
+                        if (!tailscale) {
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(value = typed, onValueChange = { typed = it }, singleLine = true)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = tailscale || typed.trim().equals("unencrypted", ignoreCase = true),
+                        onClick = {
+                            clearTextAsk = null
+                            clearHostAccepted = host
+                            saveAll(askHub, askBridge)
+                        }
+                    ) { Text(L.settings.serversSettings.keepPlainHttp) }
+                },
+                dismissButton = { TextButton(onClick = { clearTextAsk = null }) { Text(L.common.cancel) } }
+            )
         }
 
         Button(
@@ -1246,43 +1361,15 @@ internal fun ServersSubScreen(
                     saveIsError = true
                     return@Button
                 }
-                hubText = hub
-                bridgeText = bridge
-                onSaveServerUrls(hub, bridge)
-                val tokenToSave = if (securityToken.length == AuthPreferences.TOKEN_LENGTH) securityToken else AuthPreferences.generateRandomToken()
-                securityToken = tokenToSave
-                coroutineScope.launch {
-                    authPrefs.saveSecurityToken(tokenToSave)
-                    val wasChroot = authPrefs.isChrootModeSync()
-                    authPrefs.saveRemoteModeSync(remote)
-                    authPrefs.saveRemoteTunnelSync(remote && tunnel)
-                    if (!remote) {
-                        if (phoneChroot) ai.picodev.data.local.chroot.ChrootManager.activeInstall(context)?.let {
-                            ai.picodev.data.local.chroot.ChrootManager.activate(context, it)
-                        } else ai.picodev.data.local.chroot.ChrootManager.useTermux(context)
-                    }
-                    // the chroot's bridge outlives the app: stop it when the agents no longer run there
-                    if (wasChroot && (remote || !phoneChroot)) ai.picodev.data.local.chroot.ChrootManager.stopBridge(context)
-                    if (remote) {
-                        authPrefs.saveSshSettings(sshHost.trim(), sshPort.toIntOrNull() ?: 22, sshUser.trim(), sshPass)
-                        authPrefs.saveSshKeySync(sshKey, sshPassphrase)
-                        authPrefs.saveRemoteBinariesSync(remoteBridgeBin, remoteAgyBin, remoteClaudeBin, remoteOpenCodeBin, remoteCodexBin)
-                        authPrefs.saveRemoteInstallDirSync(remoteInstallDir)
-                        authPrefs.saveRemoteListenSync(listenBridge, listenHub, listenBind)
-                        authPrefs.saveEdgeHeaderSync(edgeName, edgeValue)
-                    } else {
-                        authPrefs.saveAgyBridgeBinaryPath(bridgeBinPath.trim().ifBlank { authPrefs.getDefaultBridgeBinaryPath() })
-                        authPrefs.saveAgyBinaryPath(agyBinPath.trim().ifBlank { authPrefs.getDefaultAgyBinaryPath() })
-                        authPrefs.saveClaudeBinaryPath(claudeBinPath.trim().ifBlank { authPrefs.getDefaultClaudeBinaryPath() })
-                        authPrefs.saveOpenCodeBinaryPath(openCodeBinPath.trim().ifBlank { authPrefs.getDefaultOpenCodeBinaryPath() })
-                        authPrefs.saveCodexBinaryPath(codexBinPath.trim().ifBlank { authPrefs.getDefaultCodexBinaryPath() })
-                        authPrefs.saveChrootBinariesSync(chrootBridgeBin, chrootAgyBin, chrootClaudeBin, chrootOpenCodeBin, chrootCodexBin)
-                    }
+                // a direct http:// address on the network sends the bridge's secret in clear text: the user confirms first
+                val clearHost = listOf(bridge, hub).firstOrNull { u ->
+                    u.startsWith("http://", ignoreCase = true) && !AuthPreferences.isLoopbackHost(AuthPreferences.hostOf(u))
+                }?.let { AuthPreferences.hostOf(it) }
+                if (remote && !tunnel && clearHost != null && clearHostAccepted != clearHost) {
+                    clearTextAsk = Triple(hub, bridge, clearHost)
+                    return@Button
                 }
-                savedSnapshot = snapshot()
-                saveFeedback = L.settings.serversSettings.serverConnectionAndSecuritySettingsSaved
-                saveIsError = false
-                showRestartDialog = true
+                saveAll(hub, bridge)
             },
             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(10.dp),
             colors = ButtonDefaults.buttonColors(containerColor = ClaudeTerracotta)

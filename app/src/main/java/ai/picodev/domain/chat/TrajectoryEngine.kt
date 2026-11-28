@@ -1115,17 +1115,19 @@ class TrajectoryEngine {
                 val metaSummary = meta?.tool_summary ?: ""
                 command = if (prompt.isNotBlank()) prompt else if (metaSummary.isNotBlank()) metaSummary else "generate_image"
                 val inlineBytes = genImg?.generated_media?.inline_data
-                val inlineBase64 = if (inlineBytes != null && inlineBytes.size > 0) inlineBytes.base64() else ""
                 val imageBase64 = genImg?.generated_image?.base64_data?.takeIf { it.isNotBlank() } ?: ""
 
+                // the picture is kept as a file (the card shows file:// images); a data uri only if it cannot be stored
                 output = when {
-                    inlineBase64.isNotBlank() -> {
+                    inlineBytes != null && inlineBytes.size > 0 -> {
                         val mime = genImg?.generated_media?.mime_type?.takeIf { it.isNotBlank() } ?: "image/png"
-                        "data:$mime;base64,$inlineBase64"
+                        ai.picodev.data.media.InlineMediaStore.fileForBytes(inlineBytes.toByteArray(), mime)
+                            ?.let { "file://${it.absolutePath}" }
+                            ?: "data:$mime;base64,${inlineBytes.base64()}"
                     }
                     imageBase64.isNotBlank() -> {
                         val mime = genImg?.generated_image?.mime_type?.takeIf { it.isNotBlank() } ?: "image/png"
-                        "data:$mime;base64,$imageBase64"
+                        ai.picodev.data.media.InlineMediaStore.storedDataUri("data:$mime;base64,$imageBase64")
                     }
                     genImg?.generated_media?.uri?.isNotBlank() == true -> {
                         genImg.generated_media.uri
@@ -1371,7 +1373,8 @@ class TrajectoryEngine {
             }
         }
 
-        return list
+        // pictures and voice notes sent as data: kept as files, the message holds only their path
+        return ai.picodev.data.media.InlineMediaStore.stored(list)
     }
 
     private fun extractTitleFromSystemMessage(msgText: String): String {

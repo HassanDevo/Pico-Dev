@@ -1,7 +1,6 @@
 package ai.picodev.data.adb
 
 import android.content.Context
-import android.provider.Settings
 import android.util.Base64
 import android.util.Log
 import ai.picodev.data.local.LocalCommandResult
@@ -322,8 +321,7 @@ object DeviceAccess {
 
     // ---------------- terminal commands ----------------
 
-    private fun token(): String =
-        runCatching { Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID) }.getOrNull().orEmpty()
+    private fun token(): String = ai.picodev.data.remote.LocalServerAuth.key(appContext)
 
     private fun port(): Int = ai.picodev.data.remote.AndroidLocalBridgeServer.instance.boundPort
 

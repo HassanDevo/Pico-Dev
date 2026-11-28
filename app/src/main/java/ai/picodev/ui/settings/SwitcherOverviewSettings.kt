@@ -4,6 +4,8 @@ import ai.picodev.data.preferences.AuthPreferences
 import ai.picodev.theme.ClaudeTerracotta
 import ai.picodev.ui.components.PageOverviewPillIcon
 import ai.picodev.ui.components.floatingSwitcherHandleIcon
+import ai.picodev.ui.components.mergedIntoRow
+import ai.picodev.ui.components.toggleRowSemantics
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -71,6 +73,7 @@ fun SwitcherOverviewOptions(handleIcon: String) {
     val scope = rememberCoroutineScope()
     val mode = rememberPageOverviewMode()
     val layout by prefs.pageOverviewLayout.collectAsState(initial = prefs.getPageOverviewLayoutSync())
+    val keepScroll by prefs.pageOverviewKeepScroll.collectAsState(initial = prefs.getPageOverviewKeepScrollSync())
     val switcherScale by prefs.floatingSwitcherScale.collectAsState(initial = prefs.getFloatingSwitcherScaleSync())
     val overviewPillScale by prefs.overviewPillScale.collectAsState(initial = prefs.getOverviewPillScaleSync())
     val overviewOn = mode == "SWITCHER" || mode == "OWN_PILL"
@@ -110,6 +113,13 @@ fun SwitcherOverviewOptions(handleIcon: String) {
                 ),
                 selected = layout,
                 onSelect = { l -> scope.launch { prefs.savePageOverviewLayout(l) } }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            SettingSwitchRow(
+                title = L.settings.switcherOverviewSettings.keepScrollPosition,
+                description = L.settings.switcherOverviewSettings.keepScrollPositionHint,
+                checked = keepScroll,
+                onCheckedChange = { on -> scope.launch { prefs.savePageOverviewKeepScroll(on) } }
             )
             if (mode == "OWN_PILL") {
                 Spacer(modifier = Modifier.height(12.dp))
@@ -202,7 +212,7 @@ private fun SettingSwitchRow(
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().toggleRowSemantics(checked, onCheckedChange),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -226,7 +236,8 @@ private fun SettingSwitchRow(
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
                 checkedTrackColor = ClaudeTerracotta
-            )
+            ),
+            modifier = Modifier.mergedIntoRow()
         )
     }
 }

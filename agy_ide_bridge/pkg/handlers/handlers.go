@@ -48,6 +48,13 @@ type Handler struct {
 	Hub        Broadcaster
 	OnShutdown func()
 
+	// for GET /api/debug/report (the app's Troubleshoot page): the security token (only to mask it and to test the hub
+	// with the app's header, never sent back), this run's log file, the command line and the agents turned off
+	SecToken   string
+	RunLogPath string
+	StartArgs  []string
+	AgentsOff  []string
+
 	lastLoginURL   string
 	lastLoginURLMu sync.RWMutex
 	lastLoginTime  time.Time
@@ -308,8 +315,17 @@ func (h *Handler) ConversationsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// validConvID reports whether id names one conversation folder under BrainDir: not empty, ".", ".." or a path.
+func validConvID(id string) bool {
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\`)
+}
+
 func (h *Handler) ConversationMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	convID := strings.TrimPrefix(r.URL.Path, "/api/conversations/")
+	if !validConvID(convID) {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "invalid conversation id", "messages": []models.ChatMessage{}})
+		return
+	}
 
 	transcriptPath := filepath.Join(h.Cfg.BrainDir, convID, ".system_generated", "logs", "transcript.jsonl")
 	if _, err := os.Stat(transcriptPath); os.IsNotExist(err) {
@@ -329,6 +345,10 @@ func (h *Handler) ConversationMessagesHandler(w http.ResponseWriter, r *http.Req
 func (h *Handler) UpdateConversationTitleHandler(w http.ResponseWriter, r *http.Request) {
 	convID := strings.TrimPrefix(r.URL.Path, "/api/conversations/")
 	convID = strings.TrimSuffix(convID, "/title")
+	if !validConvID(convID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversation id"})
+		return
+	}
 
 	var req struct {
 		Title string `json:"title"`
@@ -349,6 +369,11 @@ func (h *Handler) UpdateConversationTitleHandler(w http.ResponseWriter, r *http.
 
 func (h *Handler) DeleteConversationHandler(w http.ResponseWriter, r *http.Request) {
 	convID := strings.TrimPrefix(r.URL.Path, "/api/conversations/")
+	// an empty id would be BrainDir itself, and RemoveAll would delete every conversation
+	if !validConvID(convID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid conversation id"})
+		return
+	}
 
 	convDir := filepath.Join(h.Cfg.BrainDir, convID)
 	_ = os.RemoveAll(convDir)
@@ -457,7 +482,7 @@ func (h *Handler) ExportConversationArchiveHandler(w http.ResponseWriter, r *htt
 	convID = strings.TrimSuffix(convID, "/share")
 	convID = strings.TrimSpace(convID)
 
-	if convID == "" {
+	if !validConvID(convID) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "conversationId is required"})
 		return
 	}
@@ -701,71 +726,81 @@ func (h *Handler) RestoreConversationHandler(w http.ResponseWriter, r *http.Requ
 
 	var detectedConvID string
 	var manifestTitle string
+	for _, file := range zipReader.File {
+		if filepath.ToSlash(filepath.Clean(file.Name)) != "manifest.json" {
+			continue
+		}
+		if rc, err := file.Open(); err == nil {
+			var mf struct {
+				ConversationID string `json:"conversation_id"`
+				Title          string `json:"title"`
+			}
+			_ = json.NewDecoder(io.LimitReader(rc, 1<<20)).Decode(&mf)
+			rc.Close()
+			detectedConvID = mf.ConversationID
+			manifestTitle = mf.Title
+		}
+		break
+	}
+	if detectedConvID == "" {
+		for _, file := range zipReader.File {
+			cleanName := filepath.ToSlash(filepath.Clean(file.Name))
+			if strings.HasPrefix(cleanName, "conversations/") && strings.HasSuffix(cleanName, ".db") {
+				detectedConvID = strings.TrimSuffix(filepath.Base(cleanName), ".db")
+				break
+			}
+			if strings.HasPrefix(cleanName, "brain/") {
+				if parts := strings.Split(cleanName, "/"); len(parts) >= 2 && parts[1] != "" {
+					detectedConvID = parts[1]
+					break
+				}
+			}
+		}
+	}
+	if !validConvID(detectedConvID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No valid conversation found in archive"})
+		return
+	}
 
-	// Unpack files safely
+	// 2. An existing chat is only replaced when the app asked for it (the user confirmed): an archive another app sent
+	//    must not silently overwrite a chat whose id it knows
+	_, dbErr := os.Stat(filepath.Join(targetConvsDir, detectedConvID+".db"))
+	_, brainErr := os.Stat(filepath.Join(targetBrainDir, detectedConvID))
+	if (dbErr == nil || brainErr == nil) && r.URL.Query().Get("replace") != "1" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "conversation_exists", "id": detectedConvID, "title": manifestTitle})
+		return
+	}
+
+	// 3. Unpack that conversation's files only
+	ownsPath := func(rel string) bool {
+		return rel == detectedConvID || strings.HasPrefix(rel, detectedConvID+".") || strings.HasPrefix(rel, detectedConvID+"/")
+	}
 	for _, file := range zipReader.File {
 		cleanName := filepath.Clean(file.Name)
 		if strings.HasPrefix(cleanName, "..") || strings.HasPrefix(cleanName, "/") || strings.HasPrefix(cleanName, "\\") {
 			continue
 		}
-
-		if cleanName == "manifest.json" {
-			rc, err := file.Open()
-			if err == nil {
-				var mf struct {
-					ConversationID string `json:"conversation_id"`
-					Title          string `json:"title"`
-				}
-				_ = json.NewDecoder(rc).Decode(&mf)
-				rc.Close()
-				if mf.ConversationID != "" {
-					detectedConvID = mf.ConversationID
-				}
-				if mf.Title != "" {
-					manifestTitle = mf.Title
-				}
-			}
-			continue
-		}
-
-		if detectedConvID == "" {
-			if strings.HasPrefix(cleanName, "conversations/") && strings.HasSuffix(cleanName, ".db") {
-				base := filepath.Base(cleanName)
-				detectedConvID = strings.TrimSuffix(base, ".db")
-			} else if strings.HasPrefix(cleanName, "brain/") {
-				parts := strings.Split(cleanName, "/")
-				if len(parts) >= 2 && parts[1] != "" {
-					detectedConvID = parts[1]
-				}
-			}
-		}
-
+		cleanName = filepath.ToSlash(cleanName)
 		var destPath string
-		if strings.HasPrefix(cleanName, "conversations/") {
-			rel := strings.TrimPrefix(cleanName, "conversations/")
+		if rel := strings.TrimPrefix(cleanName, "conversations/"); rel != cleanName && ownsPath(rel) {
 			destPath = filepath.Join(targetConvsDir, rel)
-		} else if strings.HasPrefix(cleanName, "brain/") {
-			rel := strings.TrimPrefix(cleanName, "brain/")
+		} else if rel := strings.TrimPrefix(cleanName, "brain/"); rel != cleanName && ownsPath(rel) {
 			destPath = filepath.Join(targetBrainDir, rel)
-		} else if strings.HasPrefix(cleanName, "annotations/") {
-			rel := strings.TrimPrefix(cleanName, "annotations/")
+		} else if rel := strings.TrimPrefix(cleanName, "annotations/"); rel != cleanName && ownsPath(rel) {
 			destPath = filepath.Join(targetAnnDir, rel)
 		} else {
 			continue
 		}
-
 		if file.FileInfo().IsDir() {
 			_ = os.MkdirAll(destPath, 0755)
 			continue
 		}
-
 		_ = os.MkdirAll(filepath.Dir(destPath), 0755)
 		rc, err := file.Open()
 		if err != nil {
 			continue
 		}
-
-		mode := file.Mode()
+		mode := file.Mode().Perm()
 		if mode == 0 {
 			mode = 0644
 		}
@@ -775,11 +810,6 @@ func (h *Handler) RestoreConversationHandler(w http.ResponseWriter, r *http.Requ
 			outFile.Close()
 		}
 		rc.Close()
-	}
-
-	if detectedConvID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "No valid conversation found in archive"})
-		return
 	}
 
 	now := time.Now().UTC()
@@ -1580,12 +1610,7 @@ func (h *Handler) FileSaveHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = os.MkdirAll(filepath.Dir(req.Path), 0755)
-	tmpPath := req.Path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(req.Content), 0644); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := os.Rename(tmpPath, req.Path); err != nil {
+	if err := writeFileKeepMode(req.Path, []byte(req.Content)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1597,6 +1622,32 @@ func (h *Handler) FileSaveHandler(w http.ResponseWriter, r *http.Request) {
 		"path":    req.Path,
 		"hash":    newHash,
 	})
+}
+
+// writeFileKeepMode replaces a file through a temp file and a rename. A symlink is followed, so its target is written
+// and the link stays; the file keeps its permissions (a new file gets 0644).
+func writeFileKeepMode(path string, data []byte) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	mode := os.FileMode(0644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, mode); err != nil {
+		return err
+	}
+	// WriteFile's mode is reduced by the umask; set the original one exactly
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func (h *Handler) FilePatchHandler(w http.ResponseWriter, r *http.Request) {
@@ -1638,12 +1689,7 @@ func (h *Handler) FilePatchHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	newContent := strings.Join(updated, "\n")
-	tmpPath := req.Path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(newContent), 0644); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := os.Rename(tmpPath, req.Path); err != nil {
+	if err := writeFileKeepMode(req.Path, []byte(newContent)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1907,12 +1953,16 @@ func (h *Handler) McpConfigHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		saveContent := injectTermuxEnvIfNeeded(req.Content)
 
-		// Write to both primary (~/.gemini/config/mcp_config.json) and legacy (~/.gemini/antigravity/mcp_config.json)
+		// Write to both primary (~/.gemini/config/mcp_config.json) and legacy (~/.gemini/antigravity/mcp_config.json).
+		// 0600: the entries carry secret headers (X-Device-Id = the phone tools key). WriteFile keeps the mode of a
+		// file that already exists, so chmod after.
 		_ = os.MkdirAll(filepath.Dir(primaryConfigPath), 0755)
-		errPrimary := os.WriteFile(primaryConfigPath, []byte(saveContent), 0644)
+		errPrimary := os.WriteFile(primaryConfigPath, []byte(saveContent), 0600)
+		_ = os.Chmod(primaryConfigPath, 0600)
 
 		_ = os.MkdirAll(filepath.Dir(legacyConfigPath), 0755)
-		errLegacy := os.WriteFile(legacyConfigPath, []byte(saveContent), 0644)
+		errLegacy := os.WriteFile(legacyConfigPath, []byte(saveContent), 0600)
+		_ = os.Chmod(legacyConfigPath, 0600)
 
 		if errPrimary != nil && errLegacy != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": errPrimary.Error()})

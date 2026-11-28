@@ -47,8 +47,8 @@ object LanguageManager {
     const val FORMAT_VERSION = 2
     /** Community languages' ids: "repo." + their pack id (user ids never have a dot, see [freeId]). */
     const val REPO_PREFIX = "repo."
-    // "AGL2": tables cached by builds before the key index fix were empty, so they are not read again
-    private const val CACHE_MAGIC = 0x41474C32
+    // "AGL3": tables cached before ProtectedTexts still hold translated security texts, so they are rebuilt once
+    private const val CACHE_MAGIC = 0x41474C33
 
     // ------------------------------------------------------------------ data
 
@@ -371,6 +371,8 @@ object LanguageManager {
         val t = arrayOfNulls<Any?>(L.COUNT)
         lang.strings.forEach { (k, v) ->
             val i = src.index[k] ?: return@forEach
+            // security texts (Allow / Deny, permission and approval screens) always show the app's own English
+            if (k in ProtectedTexts.KEYS) return@forEach
             // a file from elsewhere (downloaded, built for another app version) can have a text that doesn't fit: English shows
             if (lang.readOnly && checkText(src, i, v) != null) return@forEach
             slot(src, i, v)?.let { t[i] = it }
@@ -804,18 +806,33 @@ object LanguageManager {
     // ------------------------------------------------------------------ the language agents reply in
 
     /** "" (not set), [AI_REPLY_APP] (follow the app's language) or a language name like "Nepali". */
-    fun chooseAiReply(value: String) {
-        aiReply = value.trim()
+    /**
+     * A language name that may go into every chat's context: letters (any script, with their marks), spaces and "-",
+     * at most 40 characters. No newlines or punctuation, so it can't carry instructions for the agents.
+     */
+    private val languageName = Regex("^[\\p{L}\\p{M}][\\p{L}\\p{M} -]{0,39}$")
+
+    fun isValidAiReplyLanguage(value: String): Boolean = languageName.matches(value.trim())
+
+    /** False (nothing changed) for a language name that isn't [isValidAiReplyLanguage]. */
+    fun chooseAiReply(value: String): Boolean {
+        val v = value.trim()
+        if (v.isNotEmpty() && v != AI_REPLY_APP && !isValidAiReplyLanguage(v)) return false
+        aiReply = v
         prefs?.edit()?.putString("ai_reply", aiReply)?.apply()
+        return true
     }
 
     /** The language every chat is told to reply in, or null (the agent picks, normally the user's). */
     fun aiReplyLanguage(): String? = when (val v = aiReply) {
         "" -> null
         AI_REPLY_APP -> if (currentId == ENGLISH) null else load(currentId)?.let { l ->
-            if (l.nativeName.isNotBlank() && !l.nativeName.equals(l.name, true)) "${l.name} (${l.nativeName})" else l.name
+            // a language's names come from its file (custom languages too): only a clean name goes into the context
+            val name = l.name.takeIf { isValidAiReplyLanguage(it) } ?: return@let null
+            if (l.nativeName.isNotBlank() && !l.nativeName.equals(name, true) && isValidAiReplyLanguage(l.nativeName)) "$name (${l.nativeName.trim()})" else name
         }
-        else -> v
+        // a value saved before names were checked is ignored when it isn't a clean name
+        else -> v.takeIf { isValidAiReplyLanguage(it) }
     }
 
     /** The part of the app context that tells agents the reply language, or null. */

@@ -77,6 +77,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import ai.picodev.i18n.L
+import ai.picodev.ui.components.mergedIntoRow
+import ai.picodev.ui.components.toggleRowSemantics
 
 object MiniAppShortcuts {
     /** Home-screen shortcuts made before the launcher activity existed opened the root directly (losing the page): point them at it. */
@@ -193,7 +195,7 @@ private fun PermissionDialog(d: NativeDialog.Permissions) {
     AlertDialog(
         onDismissRequest = { d.result.complete(d.names.associateWith { false }) },
         icon = { Image(icon, null, Modifier.size(48.dp).clip(RoundedCornerShape(12.dp))) },
-        title = { Text(if (d.firstLaunch) L.miniapps.miniAppUi.nameWantsTo(app.name) else L.miniapps.miniAppUi.allowNameToUseThis(app.name), style = MaterialTheme.typography.titleLarge) },
+        title = { ai.picodev.ui.components.FilterObscuredTouches(); Text(if (d.firstLaunch) L.miniapps.miniAppUi.nameWantsTo(app.name) else L.miniapps.miniAppUi.allowNameToUseThis(app.name), style = MaterialTheme.typography.titleLarge) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 d.names.forEach { name ->
@@ -246,7 +248,7 @@ private fun McpCallDialog(d: NativeDialog.McpCall) {
     AlertDialog(
         onDismissRequest = { d.result.complete(null) },
         icon = { Icon(Icons.Outlined.WarningAmber, null, tint = if (MiniAppMcpAccess.isSensitive(d.server)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) },
-        title = { Text(L.miniapps.miniAppUi.nameWantsToUseTool(d.app.name, d.tool)) },
+        title = { ai.picodev.ui.components.FilterObscuredTouches(); Text(L.miniapps.miniAppUi.nameWantsToUseTool(d.app.name, d.tool)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(L.miniapps.miniAppUi.picodevToolsServer(d.server), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -397,18 +399,19 @@ fun AppInfoSheet(app: MiniApp, onDismiss: () -> Unit, onClearData: () -> Unit) {
             if (states.isEmpty()) Text(L.miniapps.miniAppUi.thisAppAsksForNoPermissions, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             states.forEach { (name, state) ->
                 val info = MiniAppPermissions.describe(app, name)
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                val onTogglePermission: (Boolean) -> Unit = { on ->
+                    when {
+                        on && MiniAppPermissions.needsTypedConfirm(context, app, name) -> confirmOn = name
+                        !on && name in app.required -> confirmOff = name
+                        else -> { MiniAppPermissions.set(context, app, name, on); tick++ }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).toggleRowSemantics(state == MiniAppPermissions.State.GRANTED, onTogglePermission), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(info.title, style = MaterialTheme.typography.bodyLarge, color = if (info.dangerous) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
                         Text(info.detail.ifBlank { state.js }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(checked = state == MiniAppPermissions.State.GRANTED, onCheckedChange = { on ->
-                        when {
-                            on && MiniAppPermissions.needsTypedConfirm(context, app, name) -> confirmOn = name
-                            !on && name in app.required -> confirmOff = name
-                            else -> { MiniAppPermissions.set(context, app, name, on); tick++ }
-                        }
-                    })
+                    Switch(checked = state == MiniAppPermissions.State.GRANTED, onCheckedChange = onTogglePermission, modifier = Modifier.mergedIntoRow())
                 }
                 if (name in app.required) Text(L.common.required, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
@@ -432,13 +435,13 @@ fun AppInfoSheet(app: MiniApp, onDismiss: () -> Unit, onClearData: () -> Unit) {
                 Text(L.miniapps.miniAppUi.picodevTools, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
                 mcpServers.forEach { sv ->
                     val ask = remember(tick) { MiniAppMcpAccess.askSwitch(context, app, sv) }
-                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).toggleRowSemantics(ask, { MiniAppMcpAccess.setAsk(context, app, sv, it); tick++ }), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(L.miniapps.miniAppUi.askBeforeEachCallSv(sv), style = MaterialTheme.typography.bodyLarge)
                             Text(if (MiniAppMcpAccess.isSensitive(sv)) L.miniapps.miniAppUi.recommendedTheseToolsCanActOn else L.miniapps.miniAppUi.youSeeEachCallAndIts,
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Switch(checked = ask, onCheckedChange = { MiniAppMcpAccess.setAsk(context, app, sv, it); tick++ })
+                        Switch(checked = ask, onCheckedChange = { MiniAppMcpAccess.setAsk(context, app, sv, it); tick++ }, modifier = Modifier.mergedIntoRow())
                     }
                 }
             }
@@ -614,7 +617,7 @@ private fun McpTypedConfirmDialog(app: MiniApp, name: String, onResult: (Boolean
     AlertDialog(
         onDismissRequest = { onResult(false) },
         icon = { Icon(Icons.Outlined.WarningAmber, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(36.dp)) },
-        title = { Text(L.miniapps.miniAppUi.letNameUseWhat(app.name, what)) },
+        title = { ai.picodev.ui.components.FilterObscuredTouches(); Text(L.miniapps.miniAppUi.letNameUseWhat(app.name, what)) },
         text = {
             Column {
                 Text(

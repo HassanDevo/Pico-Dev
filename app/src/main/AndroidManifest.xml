@@ -49,7 +49,7 @@
 
     <application
         android:name=".PicoDevApplication"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:largeHeap="true"
         android:hasFragileUserData="true"
         android:manageSpaceActivity="ai.picodev.ui.settings.ManageSpaceActivity"
@@ -536,7 +536,7 @@
         </activity>
         <activity
             android:name="ai.picodev.ui.miniapps.MiniAppActivity"
-            android:exported="true"
+            android:exported="false"
             android:documentLaunchMode="intoExisting"
             android:theme="@style/Theme.PicoDev.MiniApp"
             android:windowSoftInputMode="stateHidden|adjustResize"

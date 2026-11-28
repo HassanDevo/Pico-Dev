@@ -134,12 +134,17 @@ object MiniAppNotify {
     fun show(context: Context, app: MiniApp, title: String, body: String, tag: String) =
         show(context, app, JSONObject().put("id", tag).put("title", title).put("body", body))
 
+    // signed: MiniAppLaunchActivity is exported (links from websites too), and only a real tap may be a notification event
     private fun launchIntent(context: Context, app: MiniApp, tag: String, action: String) =
-        Intent(context, MiniAppLaunchActivity::class.java)
-            .setAction(Intent.ACTION_VIEW)
-            .setData(Uri.parse("picodev-notif://${Uri.encode(app.id)}/${Uri.encode(tag)}/${Uri.encode(action)}"))
-            .putExtra(EXTRA_APP, app.id).putExtra(EXTRA_NOTIF, tag).putExtra(EXTRA_ACTION, action)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ai.picodev.data.security.AppIntentKey.sign(
+            context,
+            Intent(context, MiniAppLaunchActivity::class.java)
+                .setAction(Intent.ACTION_VIEW)
+                .setData(Uri.parse("picodev-notif://${Uri.encode(app.id)}/${Uri.encode(tag)}/${Uri.encode(action)}"))
+                .putExtra(EXTRA_APP, app.id).putExtra(EXTRA_NOTIF, tag).putExtra(EXTRA_ACTION, action)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            ai.picodev.data.security.AppIntentKey.miniAppNotification(app.id, tag, action)
+        )
 
     private fun broadcastIntent(context: Context, app: MiniApp, tag: String, action: String) =
         Intent(context, MiniAppNotificationReceiver::class.java)
@@ -304,7 +309,8 @@ object MiniAppNotify {
                 val pi = if (reply != null && reply != false || !a.optBoolean("open", true))
                     PendingIntent.getBroadcast(context, actionReq, broadcastIntent(context, app, tag, aid), flags(mutable = reply != null && reply != false))
                 else PendingIntent.getActivity(context, actionReq, launchIntent(context, app, tag, aid), flags())
-                val builder = NotificationCompat.Action.Builder(0, label, pi)
+                // buttons and replies run the app's code: from the lock screen only after unlocking (Android 12+)
+                val builder = NotificationCompat.Action.Builder(0, label, pi).setAuthenticationRequired(true)
                 if (reply != null && reply != false) {
                     builder.addRemoteInput(RemoteInput.Builder(REPLY_KEY).setLabel((reply as? JSONObject)?.optString("placeholder")?.ifBlank { null } ?: label).build())
                     builder.setAllowGeneratedReplies(true)

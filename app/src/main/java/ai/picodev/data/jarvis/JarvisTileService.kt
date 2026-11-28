@@ -32,7 +32,9 @@ class JarvisTileService : TileService() {
         super.onClick()
         JarvisPreferences.init(this)
         if (JarvisController.isAttached && JarvisPreferences.enabled.value && JarvisPreferences.handsFree.value) {
-            runCatching { startService(Intent(this, JarvisService::class.java).setAction(JarvisService.ACTION_TALK)) }
+            val talk = { runCatching { startService(Intent(this, JarvisService::class.java).setAction(JarvisService.ACTION_TALK)) }; Unit }
+            // from the lock screen only after unlocking: whoever holds a locked phone must not talk to Jarvis
+            if (isLocked) unlockAndRun { talk() } else talk()
             return
         }
         if (JarvisController.isAttached && JarvisPreferences.enabled.value && JarvisPreferences.voiceAssistant.value) {
@@ -44,6 +46,8 @@ class JarvisTileService : TileService() {
         val intent = Intent(this, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(EXTRA_TALK, JarvisPreferences.enabled.value)
+        // MainActivity is exported: it starts listening only for an intent the app signed
+        ai.picodev.data.security.AppIntentKey.sign(this, intent, ai.picodev.data.security.AppIntentKey.JARVIS_TALK)
         open(intent, 77)
     }
 

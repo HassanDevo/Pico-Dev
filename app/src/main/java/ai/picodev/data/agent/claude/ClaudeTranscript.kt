@@ -1,5 +1,7 @@
 package ai.picodev.data.agent.claude
 
+import ai.picodev.data.media.InlineMediaStore
+import ai.picodev.data.preferences.AuthPreferences
 import ai.picodev.domain.model.ChatAttachment
 import ai.picodev.domain.model.ChatMessage
 import ai.picodev.domain.model.ChoiceOption
@@ -935,22 +937,30 @@ class ClaudeTranscript {
 
         private fun ClaudeContentBlock.toAttachment(uuid: String, index: Int): ChatAttachment? {
             val src = source ?: return null
+            // a bridge asked for media=refs saved the prompt's picture as a file of the chat: shown from there
+            val savedPath = src.path?.takeIf { src.type == "path" && it.isNotBlank() }
+            val savedUrl = savedPath?.let {
+                AuthPreferences.currentBridgeHttpUrl.trimEnd('/') + "/api/claude/attachments/raw?path=" +
+                    java.net.URLEncoder.encode(it, "UTF-8")
+            }
             return when (type) {
-                "image" -> ChatAttachment(
+                "image" -> InlineMediaStore.stored(ChatAttachment(
                     id = "${uuid}_att_$index",
                     name = "image_${index + 1}",
                     path = "",
                     isImage = true,
+                    url = savedUrl,
                     mimeType = src.media_type,
-                    base64 = src.data
-                )
-                "document" -> ChatAttachment(
+                    base64 = if (src.type == "base64") src.data else null
+                ))
+                "document" -> InlineMediaStore.stored(ChatAttachment(
                     id = "${uuid}_att_$index",
                     name = title ?: "document_${index + 1}",
                     path = "",
+                    url = savedUrl,
                     mimeType = src.media_type,
                     base64 = if (src.type == "base64") src.data else null
-                )
+                ))
                 else -> null
             }
         }

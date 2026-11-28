@@ -759,7 +759,8 @@ class OpenCodeChatBackend(
     }
 
     private fun attachmentPart(a: ChatAttachment, files: MutableList<JsonObject>, notes: MutableList<String>) {
-        val b64 = a.base64
+        // its own data, or (a picture shown from a saved file) the file's
+        val b64 = ai.picodev.data.media.InlineMediaStore.base64Of(a)
         // a file by path is already listed in the message's text; only an image's shrunk copy is sent itself
         if (a.reference && b64.isNullOrBlank()) return
         val mime = a.mimeType ?: if (a.isImage) "image/png" else "application/octet-stream"

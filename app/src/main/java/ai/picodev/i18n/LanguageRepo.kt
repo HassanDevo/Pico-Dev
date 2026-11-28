@@ -21,7 +21,9 @@ import java.util.concurrent.TimeUnit
  * The repository's LanguagePacks/index.json lists every pack with its SHA-256; a pack is
  * LanguagePacks/<id>.json, downloaded from that same repository, so the file always matches the hash.
  * Downloads are saved byte for byte by [LanguageManager.installRepoPack]: an installed pack's SHA-256 against the
- * index tells whether an update is waiting. Nothing is fetched until the Language page (or a tool) asks for the list.
+ * index tells whether an update is waiting. Nothing is fetched until the Language page (or a tool) asks for the list,
+ * or, while the app is in a community language, the startup update check ([LanguageUpdateCheck]) looks for a newer
+ * pack in the same LanguagePacks/index.json (an installed pack's hash is compared with the one listed there).
  */
 object LanguageRepo {
     const val REPO = "HassanDevo/Pico-Dev-RSS"

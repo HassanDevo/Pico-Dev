@@ -2,6 +2,14 @@ package ai.picodev.ui.settings
 
 import ai.picodev.ui.components.bouncyVerticalScroll
 import ai.picodev.ui.components.ClaudeAccent
+import ai.picodev.ui.components.mergedIntoRow
+import ai.picodev.ui.components.toggleRowSemantics
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
@@ -96,6 +104,9 @@ enum class SettingsSection(private val titleText: () -> String, private val subt
     /** The texts of one language (which one: the dialog's languageTextsId). */
     LANGUAGE_TEXTS({ L.settings.dialog.languageTexts }, { L.settings.dialog.everyTextOfTheAppWith }),
     APPEARANCE({ L.settings.dialog.appearance }, { L.settings.dialog.chatTextSizeAgentStepsMessage }),
+    PETS({ L.pets.settings.title }, { L.pets.settings.subtitle }),
+    /** One pet's page (which one: the dialog's petEditId). */
+    PET_EDIT({ L.pets.settings.editTitle }, { L.pets.settings.editSubtitle }),
     HOME_SCREEN({ L.settings.dialog.homeScreen }, { L.settings.dialog.widgetsShortcutsToChatsAndPages }),
     FILE_PICKER({ L.settings.dialog.filesInOtherApps }, { L.settings.dialog.picodevsAndUbuntusHomeFoldersIn }),
     STEM_RENDERING({ L.settings.dialog.stemDiagrams }, { L.settings.dialog.chemistryGraphsGeometrySimulations }),
@@ -154,6 +165,7 @@ enum class SettingsSection(private val titleText: () -> String, private val subt
     TERMUX_API({ "Termux:API" }, { L.settings.dialog.howTermuxApiCommandsAreHandled }),
     X11_DESKTOP({ L.settings.dialog.x11Desktop }, { L.settings.dialog.linuxDesktopAppsWithTermuxX11 }),
     UPDATES({ L.settings.dialog.updates }, { L.settings.dialog.betaUpdatesAndHowOftenPicoDev }),
+    TROUBLESHOOT({ L.settings.dialog.troubleshoot }, { L.settings.dialog.troubleshootSubtitle }),
     CHANGELOG({ L.settings.dialog.whatsNew }, { L.settings.dialog.everyPicoDevVersionAndWhatChanged }),
     ABOUT({ L.settings.dialog.aboutInfo }, { L.settings.dialog.appVersionPackageDetailsAndBridge });
     val title: String get() = titleText()
@@ -189,6 +201,7 @@ enum class SettingsSection(private val titleText: () -> String, private val subt
         AGENT_HISTORY -> AGENT_MEMORY
         CHANGELOG -> ABOUT
         LANGUAGE_TEXTS -> LANGUAGE
+        PET_EDIT -> PETS
         else -> if (jarvisPage != null) JARVIS else MAIN
     }
 }
@@ -364,6 +377,7 @@ fun SettingsDialog(
     var claudePage by remember { mutableStateOf(initialClaudePage ?: ai.picodev.ui.claude.ClaudeSettingsPage.ACCOUNT) }
     // Settings → Language → the texts of this language
     var languageTextsId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(ai.picodev.i18n.LanguageManager.currentId) }
+    var petEditId by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(ai.picodev.ui.components.pet.PetKind.GEMMY.id) }
     var openCodePage by remember { mutableStateOf(initialOpenCodePage ?: ai.picodev.ui.opencode.OpenCodeSettingsPage.SERVER) }
     LaunchedEffect(initialOpenCodePage) {
         if (initialOpenCodePage != null && openCode != null) {
@@ -529,6 +543,8 @@ fun SettingsDialog(
 
                     SettingsSection.LANGUAGE -> LanguageScreen(onOpenTexts = { languageTextsId = it; currentSection = SettingsSection.LANGUAGE_TEXTS })
                     SettingsSection.LANGUAGE_TEXTS -> LanguageTextsScreen(languageTextsId, onOpen = { languageTextsId = it })
+                    SettingsSection.PETS -> PetsSettingsScreen(onEditPet = { petEditId = it.id; currentSection = SettingsSection.PET_EDIT })
+                    SettingsSection.PET_EDIT -> PetEditScreen(ai.picodev.ui.components.pet.PetKind.of(petEditId))
 
                     SettingsSection.THEMES -> ThemesSubScreen(
                         themeMode = themeMode,
@@ -881,6 +897,11 @@ fun SettingsDialog(
                         cardBg = cardBg,
                         cardBorder = cardBorder
                     )
+                    SettingsSection.TROUBLESHOOT -> TroubleshootScreen(
+                        cardBg = cardBg,
+                        cardBorder = cardBorder,
+                        onNavigate = { currentSection = it }
+                    )
                 }
             }
         }
@@ -978,6 +999,13 @@ private fun MainSettingsMenu(
         claudeColor = state.dotColor
     }
 
+    // Pets row: the chosen pet's name, or Off
+    val petContext = LocalContext.current
+    val petPrefs = remember(petContext) { ai.picodev.data.preferences.AuthPreferences(petContext) }
+    val petOn by petPrefs.isGemmyEnabled.collectAsState(initial = true)
+    val petJson by petPrefs.petSettingsJson.collectAsState(initial = "")
+    val petValue = if (!petOn) L.common.off else ai.picodev.ui.components.pet.PetSettings.fromJson(petJson).let { it.look().name(it.kind) }
+
     SettingsRowList(
         scrollState = scrollState,
         cardBg = cardBg,
@@ -987,6 +1015,7 @@ private fun MainSettingsMenu(
                 row(SettingsSection.LANGUAGE, Icons.Outlined.Translate, c.accentTeal,
                     ai.picodev.i18n.LanguageManager.currentId.let { id -> ai.picodev.i18n.LanguageManager.languages.firstOrNull { it.id == id }?.name ?: if (id == ai.picodev.i18n.LanguageManager.ENGLISH) L.settings.dialog.english else id }),
                 row(SettingsSection.APPEARANCE, Icons.Outlined.Tune, c.accentAlt),
+                row(SettingsSection.PETS, Icons.Outlined.Pets, c.accentPink, petValue),
                 row(SettingsSection.HOME_SCREEN, Icons.Outlined.Widgets, c.accentTeal),
                 row(SettingsSection.FILE_PICKER, Icons.Outlined.FolderShared, c.warning, if (filePickerOn) L.common.on else L.common.off),
                 stemRow,
@@ -1057,6 +1086,7 @@ private fun MainSettingsMenu(
             ),
             listOf(
                 row(SettingsSection.UPDATES, Icons.Outlined.SystemUpdateAlt, c.info),
+                row(SettingsSection.TROUBLESHOOT, Icons.Outlined.HealthAndSafety, c.warning),
                 row(SettingsSection.ABOUT, Icons.Outlined.Info, c.accentAlt, "v${BuildConfig.VERSION_NAME}")
             )
         )
@@ -1764,7 +1794,7 @@ private fun AppearanceSubScreen(
         ) {
             Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(groupAgentSteps, onToggleGroupAgentSteps),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1788,7 +1818,8 @@ private fun AppearanceSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ClaudeTerracotta
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
                 // Fold after: how many steps in a row fold into a pill (1+ = every run, even a single step)
@@ -1843,7 +1874,8 @@ private fun AppearanceSubScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
+                    .padding(16.dp)
+                    .toggleRowSemantics(showMessageStats, onToggleShowMessageStats),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1867,7 +1899,8 @@ private fun AppearanceSubScreen(
                     colors = SwitchDefaults.colors(
                         checkedThumbColor = Color.White,
                         checkedTrackColor = ClaudeTerracotta
-                    )
+                    ),
+                    modifier = Modifier.mergedIntoRow()
                 )
             }
         }
@@ -1934,7 +1967,7 @@ private fun AppearanceSubScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { onSetFloatingSwitcherOrientation("VERTICAL") },
+                                .selectable(selected = isVert, role = Role.RadioButton) { onSetFloatingSwitcherOrientation("VERTICAL") },
                             shape = RoundedCornerShape(10.dp),
                             color = if (isVert) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(1.dp, if (isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
@@ -1954,7 +1987,7 @@ private fun AppearanceSubScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(10.dp))
-                                .clickable { onSetFloatingSwitcherOrientation("HORIZONTAL") },
+                                .selectable(selected = !isVert, role = Role.RadioButton) { onSetFloatingSwitcherOrientation("HORIZONTAL") },
                             shape = RoundedCornerShape(10.dp),
                             color = if (!isVert) ClaudeTerracotta.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(1.dp, if (!isVert) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
@@ -2088,7 +2121,7 @@ private fun AppearanceSubScreen(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
 
-                val allAvailable = listOf("chat", "ide", "terminal", "browser", "notes", "files", "run")
+                val allAvailable = listOf("chat", "ide", "terminal", "browser", "notes", "files", "run", "private")
                 val currentItems = floatingSwitcherItems.toMutableList()
                 val displayedList = currentItems + allAvailable.filterNot { currentItems.contains(it) }
 
@@ -2102,6 +2135,7 @@ private fun AppearanceSubScreen(
                         "notes" -> L.common.notesToDos
                         "files" -> L.settings.dialog.filesFileExplorer
                         "run" -> L.settings.dialog.runBuildRunCommands
+                        "private" -> L.privateSpace.settings.switcherLabel
                         else -> itemId
                     }
                     val itemIcon = when (itemId) {
@@ -2112,6 +2146,7 @@ private fun AppearanceSubScreen(
                         "notes" -> Icons.Outlined.EditNote
                         "files" -> Icons.Outlined.FolderOpen
                         "run" -> Icons.Outlined.PlayCircle
+                        "private" -> Icons.Outlined.Shield
                         else -> Icons.Outlined.ChatBubbleOutline
                     }
 
@@ -2123,26 +2158,28 @@ private fun AppearanceSubScreen(
                         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
                         border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                     ) {
+                        val onToggleSwitcherItem: (Boolean) -> Unit = { checked ->
+                            val updated = if (checked) {
+                                currentItems + itemId
+                            } else {
+                                if (currentItems.size > 1) currentItems.filter { it != itemId } else currentItems
+                            }
+                            onSetFloatingSwitcherItems(updated)
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .toggleRowSemantics(isEnabled, onToggleSwitcherItem, role = Role.Checkbox),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Checkbox(
                                     checked = isEnabled,
-                                    onCheckedChange = { checked ->
-                                        val updated = if (checked) {
-                                            currentItems + itemId
-                                        } else {
-                                            if (currentItems.size > 1) currentItems.filter { it != itemId } else currentItems
-                                        }
-                                        onSetFloatingSwitcherItems(updated)
-                                    },
+                                    onCheckedChange = onToggleSwitcherItem,
                                     colors = CheckboxDefaults.colors(checkedColor = ClaudeTerracotta),
-                                    modifier = Modifier.size(24.dp)
+                                    modifier = Modifier.size(24.dp).mergedIntoRow()
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Icon(itemIcon, contentDescription = null, tint = if (isEnabled) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), modifier = Modifier.size(18.dp))
@@ -2209,57 +2246,6 @@ private fun AppearanceSubScreen(
             }
         }
 
-        // Gemmy: the floating cartoon buddy (on by default; first offered by the one-time "Meet Gemmy" dialog)
-        val gemmyContext = LocalContext.current
-        val gemmyPrefs = remember(gemmyContext) { ai.picodev.data.preferences.AuthPreferences(gemmyContext) }
-        val isGemmyEnabled by gemmyPrefs.isGemmyEnabled.collectAsState(initial = true)
-        val gemmyScope = rememberCoroutineScope()
-        Surface(
-            shape = RoundedCornerShape(14.dp),
-            color = cardBg,
-            border = cardBorder,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ai.picodev.ui.components.GemmyPreview(
-                    zoom = 0.85f,
-                    modifier = Modifier.alpha(if (isGemmyEnabled) 1f else 0.4f)
-                )
-                Column(modifier = Modifier.weight(1f).padding(start = 4.dp, end = 12.dp)) {
-                    Text(
-                        text = L.settings.dialog.gemmy,
-                        fontSize = 13.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = L.settings.dialog.aFloatingCartoonBuddyAcrossThe,
-                        fontSize = 11.5.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                    )
-                }
-                Switch(
-                    checked = isGemmyEnabled,
-                    onCheckedChange = { enable ->
-                        gemmyScope.launch {
-                            gemmyPrefs.setGemmyEnabled(enable)
-                            gemmyPrefs.setHasSeenGemmyIntro(true) // decided here: no need for the intro dialog anymore
-                        }
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = ClaudeTerracotta
-                    )
-                )
-            }
-        }
-
         // Standalone Terminal Launcher Icon & Style Settings (PackageManager as source of truth)
         val context = LocalContext.current
         val authPrefs = remember(context) { ai.picodev.data.preferences.AuthPreferences(context) }
@@ -2282,8 +2268,19 @@ private fun AppearanceSubScreen(
                     .fillMaxWidth()
                     .padding(16.dp)
             ) {
+                val onToggleTerminalLauncher: (Boolean) -> Unit = { enable ->
+                    isTerminalLauncherEnabled = enable
+                    ai.picodev.data.preferences.TerminalLauncherManager.applyLauncherSetting(
+                        context = context,
+                        enabled = enable,
+                        style = terminalLauncherStyle
+                    )
+                    coroutineScope.launch {
+                        authPrefs.setTerminalLauncherEnabled(enable)
+                    }
+                }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(isTerminalLauncherEnabled, onToggleTerminalLauncher),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -2303,21 +2300,12 @@ private fun AppearanceSubScreen(
                     }
                     Switch(
                         checked = isTerminalLauncherEnabled,
-                        onCheckedChange = { enable ->
-                            isTerminalLauncherEnabled = enable
-                            ai.picodev.data.preferences.TerminalLauncherManager.applyLauncherSetting(
-                                context = context,
-                                enabled = enable,
-                                style = terminalLauncherStyle
-                            )
-                            coroutineScope.launch {
-                                authPrefs.setTerminalLauncherEnabled(enable)
-                            }
-                        },
+                        onCheckedChange = onToggleTerminalLauncher,
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ClaudeTerracotta
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 
@@ -2642,21 +2630,23 @@ private fun ChatHeaderIconsCard(
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
                     border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                 ) {
+                    val onToggleShortcutItem: (Boolean) -> Unit = { checked ->
+                        onSetItems(if (checked) currentItems + itemId else currentItems.filter { it != itemId })
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .toggleRowSemantics(isEnabled, onToggleShortcutItem, role = Role.Checkbox),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Checkbox(
                                 checked = isEnabled,
-                                onCheckedChange = { checked ->
-                                    onSetItems(if (checked) currentItems + itemId else currentItems.filter { it != itemId })
-                                },
+                                onCheckedChange = onToggleShortcutItem,
                                 colors = CheckboxDefaults.colors(checkedColor = ClaudeTerracotta),
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(24.dp).mergedIntoRow()
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Icon(itemIcon, contentDescription = null, tint = if (isEnabled) ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f), modifier = Modifier.size(18.dp))
@@ -2941,11 +2931,7 @@ private fun McpSubScreen(
 
         run {
             val context = LocalContext.current
-            val deviceId = remember(context) {
-                try {
-                    android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID) ?: ""
-                } catch (_: Exception) { "" }
-            }
+            val deviceId = remember(context) { ai.picodev.data.remote.LocalServerAuth.key(context) }
             val extensionManager = remember { ai.picodev.ui.browser.BrowserExtensionManager.instance }
             if (chooseWebViewExtension) WebViewExtensionMcpPicker(onDismiss = { chooseWebViewExtension = false }) { extension ->
                 serverToEdit = ai.picodev.domain.model.McpServerSpec(
@@ -3189,7 +3175,7 @@ private fun McpSubScreen(
                 ) {
                     // Title and toggle row
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().toggleRowSemantics(server.isEnabled, { onToggleServer(server.name, it) }),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
@@ -3253,7 +3239,8 @@ private fun McpSubScreen(
                         Switch(
                             checked = server.isEnabled,
                             onCheckedChange = { onToggleServer(server.name, it) },
-                            colors = SwitchDefaults.colors(checkedThumbColor = ClaudeTerracotta, checkedTrackColor = ClaudeTerracotta.copy(alpha = 0.4f))
+                            colors = SwitchDefaults.colors(checkedThumbColor = ClaudeTerracotta, checkedTrackColor = ClaudeTerracotta.copy(alpha = 0.4f)),
+                            modifier = Modifier.mergedIntoRow()
                         )
                     }
 
@@ -4191,7 +4178,7 @@ private fun TerminalSubScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().then(if (!remoteMode) Modifier.toggleRowSemantics(useSshTerminal, { onToggleUseSshTerminal(it) }) else Modifier),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
@@ -4215,7 +4202,8 @@ private fun TerminalSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = QuotaGreen
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 
@@ -4470,7 +4458,7 @@ private fun TerminalSubScreen(
 
                 // Floating session pill on/off
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(sessionPillEnabled, { enabled -> coroutineScope.launch { terminalPrefs.saveTerminalSessionPillEnabled(enabled) } }),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -4489,7 +4477,8 @@ private fun TerminalSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ClaudeTerracotta
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 
@@ -4528,7 +4517,7 @@ private fun TerminalSubScreen(
 
                 // Keyboard input mode: text mode (keyboard toolbar + clipboard) or key presses only (TYPE_NULL)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(charBasedInput, { enabled -> coroutineScope.launch { terminalPrefs.saveTerminalCharBasedInput(enabled) } }),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -4547,7 +4536,8 @@ private fun TerminalSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ClaudeTerracotta
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
             }
@@ -5082,7 +5072,7 @@ private fun BackupsSubScreen(
                             IconButton(onClick = { showBackupPasswordText = !showBackupPasswordText }) {
                                 Icon(
                                     imageVector = if (showBackupPasswordText) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = null,
+                                    contentDescription = if (showBackupPasswordText) L.components.a11y.hidePassword else L.components.a11y.showPassword,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -5139,10 +5129,11 @@ private fun BackupsSubScreen(
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
                             .clickable { envBackupIncludeSecrets = !envBackupIncludeSecrets }
+                            .semantics { role = Role.Checkbox; toggleableState = ToggleableState(envBackupIncludeSecrets) }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Checkbox(checked = envBackupIncludeSecrets, onCheckedChange = { envBackupIncludeSecrets = it })
+                        Checkbox(checked = envBackupIncludeSecrets, onCheckedChange = { envBackupIncludeSecrets = it }, modifier = Modifier.mergedIntoRow())
                         Column(modifier = Modifier.weight(1f)) {
                             Text(L.settings.dialog.includeSshKeysAndSignIns, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
                             Text(
@@ -5221,7 +5212,7 @@ private fun BackupsSubScreen(
                             IconButton(onClick = { showRestorePasswordText = !showRestorePasswordText }) {
                                 Icon(
                                     imageVector = if (showRestorePasswordText) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                    contentDescription = null,
+                                    contentDescription = if (showRestorePasswordText) L.components.a11y.hidePassword else L.components.a11y.showPassword,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -5786,7 +5777,7 @@ private fun ProjectsBackupRestoreDialog(
                                         border = BorderStroke(1.dp, if (backupMode == "git") ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .clickable { backupMode = "git" }
+                                            .selectable(selected = backupMode == "git", role = Role.RadioButton) { backupMode = "git" }
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(8.dp),
@@ -5813,7 +5804,7 @@ private fun ProjectsBackupRestoreDialog(
                                         border = BorderStroke(1.dp, if (backupMode == "full") ClaudeTerracotta else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)),
                                         modifier = Modifier
                                             .weight(1f)
-                                            .clickable { backupMode = "full" }
+                                            .selectable(selected = backupMode == "full", role = Role.RadioButton) { backupMode = "full" }
                                     ) {
                                         Row(
                                             modifier = Modifier.padding(8.dp),
@@ -5955,6 +5946,7 @@ private fun ProjectsBackupRestoreDialog(
                                             modifier = Modifier
                                                 .weight(1f)
                                                 .clickable { toggleNode() }
+                                                .semantics { role = Role.Checkbox; toggleableState = ToggleableState(isSelected) }
                                         ) {
                                             Row(
                                                 modifier = Modifier.padding(10.dp),
@@ -5965,7 +5957,7 @@ private fun ProjectsBackupRestoreDialog(
                                                     checked = isSelected,
                                                     onCheckedChange = { toggleNode() },
                                                     colors = CheckboxDefaults.colors(checkedColor = ClaudeTerracotta),
-                                                    modifier = Modifier.size(20.dp)
+                                                    modifier = Modifier.size(20.dp).mergedIntoRow()
                                                 )
                                                 Column(modifier = Modifier.weight(1f)) {
                                                     FlowRow(
@@ -6191,7 +6183,7 @@ private fun ProjectsBackupRestoreDialog(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(6.dp))
-                                        .clickable { conflictStrategy = "bak" }
+                                        .selectable(selected = conflictStrategy == "bak", role = Role.RadioButton) { conflictStrategy = "bak" }
                                         .padding(4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -6213,7 +6205,7 @@ private fun ProjectsBackupRestoreDialog(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(6.dp))
-                                        .clickable { conflictStrategy = "overwrite" }
+                                        .selectable(selected = conflictStrategy == "overwrite", role = Role.RadioButton) { conflictStrategy = "overwrite" }
                                         .padding(4.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -6234,6 +6226,7 @@ private fun ProjectsBackupRestoreDialog(
 
                         // Optional: Custom Root Target Directory
                         Row(
+                            modifier = Modifier.toggleRowSemantics(useCustomRestoreDir, { useCustomRestoreDir = it }, role = Role.Checkbox),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
@@ -6241,7 +6234,7 @@ private fun ProjectsBackupRestoreDialog(
                                 checked = useCustomRestoreDir,
                                 onCheckedChange = { useCustomRestoreDir = it },
                                 colors = CheckboxDefaults.colors(checkedColor = ClaudeTerracotta),
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(20.dp).mergedIntoRow()
                             )
                             Text(L.settings.dialog.restoreToCustomParentDirectory, fontSize = 12.sp)
                         }
@@ -6924,7 +6917,12 @@ private fun DataProtectionSubScreen(
             border = cardBorder
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
+                val onToggleShield: (Boolean) -> Unit = { enabled ->
+                    ManageSpaceActivity.setShieldEnabled(context, enabled)
+                    isShieldEnabled = ManageSpaceActivity.isShieldEnabled(context)
+                }
                 Row(
+                    modifier = Modifier.toggleRowSemantics(isShieldEnabled, onToggleShield),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -6957,10 +6955,8 @@ private fun DataProtectionSubScreen(
                     }
                     Switch(
                         checked = isShieldEnabled,
-                        onCheckedChange = { enabled ->
-                            ManageSpaceActivity.setShieldEnabled(context, enabled)
-                            isShieldEnabled = ManageSpaceActivity.isShieldEnabled(context)
-                        }
+                        onCheckedChange = onToggleShield,
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 
@@ -7592,7 +7588,7 @@ private fun CommandsSubScreen(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(activeSandbox, { onSetGlobalTerminalSandbox(it) }),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -7617,14 +7613,15 @@ private fun CommandsSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ClaudeTerracotta
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 
                 HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(requireApprovalForFileEdits, onSetRequireApprovalForFileEdits),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -7649,7 +7646,8 @@ private fun CommandsSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ClaudeTerracotta
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
             }
@@ -8329,7 +8327,7 @@ private fun AddPermissionRuleDialog(
                             modifier = Modifier
                                 .weight(1f)
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable { selectedDecision = key },
+                                .selectable(selected = isSel, role = Role.RadioButton) { selectedDecision = key },
                             shape = RoundedCornerShape(8.dp),
                             color = if (isSel) col.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
                             border = BorderStroke(
@@ -8409,6 +8407,9 @@ private fun DiagnosticsSubScreen(
     val activeStreams by ai.picodev.data.remote.inspector.NetworkInspectorManager.activeStreamsCount.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var pendingInspectorRestart by remember { mutableStateOf<Boolean?>(null) }
+    val onToggleNetworkInspector: (Boolean) -> Unit = { targetState ->
+        pendingInspectorRestart = targetState
+    }
 
     if (pendingInspectorRestart != null) {
         val targetState = pendingInspectorRestart!!
@@ -8480,7 +8481,7 @@ private fun DiagnosticsSubScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(isNetworkInspectorEnabled, onToggleNetworkInspector),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -8519,13 +8520,12 @@ private fun DiagnosticsSubScreen(
                     }
                     Switch(
                         checked = isNetworkInspectorEnabled,
-                        onCheckedChange = { targetState ->
-                            pendingInspectorRestart = targetState
-                        },
+                        onCheckedChange = onToggleNetworkInspector,
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = ai.picodev.theme.AppColors.info
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 
@@ -8544,7 +8544,7 @@ private fun DiagnosticsSubScreen(
 
                     // Floating Inspector Bubble toggle
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().toggleRowSemantics(isFloatingNetworkInspectorEnabled, onToggleFloatingNetworkInspector),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -8567,7 +8567,8 @@ private fun DiagnosticsSubScreen(
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color.White,
                                 checkedTrackColor = ai.picodev.theme.AppColors.info
-                            )
+                            ),
+                            modifier = Modifier.mergedIntoRow()
                         )
                     }
 
@@ -8608,7 +8609,7 @@ private fun DiagnosticsSubScreen(
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().toggleRowSemantics(isFloatingDiagnosticsEnabled, onToggleFloatingDiagnostics),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -8651,7 +8652,8 @@ private fun DiagnosticsSubScreen(
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color.White,
                             checkedTrackColor = QuotaGreen
-                        )
+                        ),
+                        modifier = Modifier.mergedIntoRow()
                     )
                 }
 

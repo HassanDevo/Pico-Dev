@@ -23,7 +23,9 @@ object MiniAppPermissions {
         BuildConfig.BRIDGE_PORT, BuildConfig.HUB_PORT, BuildConfig.BROWSER_MCP_PORT, BuildConfig.BROWSER_MCP_PORT + 100,
         // the Ubuntu chroot's bridge and hub
         BuildConfig.BRIDGE_PORT + AuthPreferences.CHROOT_PORT_OFFSET, BuildConfig.HUB_PORT + AuthPreferences.CHROOT_PORT_OFFSET,
-    )
+        // REA's DevTools bridge
+        9222,
+    ) + ai.picodev.data.security.LocalPorts.all() // the ports Pico Dev's servers really got (moved, random)
 
     private fun prefs(context: Context) = context.getSharedPreferences("mini_app_permissions", Context.MODE_PRIVATE)
     private fun stored(context: Context, app: MiniApp): JSONObject =
@@ -122,8 +124,15 @@ object MiniAppPermissions {
      */
     fun needsTypedConfirm(context: Context, app: MiniApp, name: String): Boolean {
         if (name == "storage:all") return true
+        // localhost with no "ports" list: every server on the phone
+        if (name == "localhost") return app.permissions[name]?.optJSONArray("ports") == null
         // tools that run commands, drive the phone or read the browser
-        if (name.startsWith("mcp:")) return MiniAppMcpAccess.isSensitive(name.removePrefix("mcp:").substringBefore('/'))
+        if (name.startsWith("mcp:")) {
+            val server = name.removePrefix("mcp:").substringBefore('/')
+            val tool = name.substringAfter('/', "").ifEmpty { null }
+            val readOnly = tool == null && app.permissions[name]?.optBoolean("readOnly") == true
+            return MiniAppMcpAccess.isSensitive(server) || (!readOnly && MiniAppMcpAccess.isSensitiveTool(server, tool))
+        }
         val path = app.permissions[name]?.optString("path")?.takeIf { name.startsWith("storage:") } ?: return false
         val f = runCatching { toFile(context, app, path) }.getOrNull() ?: return true
         // a hidden folder in home (keys, logins): the typed confirmation, except for the official apps
@@ -158,11 +167,12 @@ object MiniAppPermissions {
             }
             name == "localhost" -> {
                 val ports = spec.optJSONArray("ports")?.let { a -> (0 until a.length()).map { a.optInt(it) } }
+                // any port (no list): the app can talk to every server on the phone (other apps', dev servers): dangerous
                 Info(L.miniapps.miniAppPermissions.localServers, when {
                     ports == null -> L.miniapps.miniAppPermissions.connectToServersRunningOnThis
                     ports.isEmpty() -> L.miniapps.miniAppPermissions.noLocalServerTheAppsList
                     else -> L.miniapps.miniAppPermissions.localhostPortsValue(ports.joinToString(", "))
-                }, false)
+                }, ports == null)
             }
             name == "storage:all" -> Info(L.miniapps.miniAppPermissions.allFiles, L.miniapps.miniAppPermissions.accesstextEverythingInYourSharedStorage(accessText(spec.optString("access"))), true)
             name.startsWith("storage:") -> {
@@ -180,7 +190,8 @@ object MiniAppPermissions {
             name.startsWith("mcp:") -> {
                 val server = name.removePrefix("mcp:").substringBefore('/')
                 val tool = name.substringAfter('/', "")
-                val sensitive = MiniAppMcpAccess.isSensitive(server)
+                val sensitive = MiniAppMcpAccess.isSensitive(server) ||
+                    (!(tool.isEmpty() && spec.optBoolean("readOnly")) && MiniAppMcpAccess.isSensitiveTool(server, tool.ifEmpty { null }))
                 when {
                     tool.isNotEmpty() -> Info("$server: $tool", if (sensitive) L.miniapps.miniAppPermissions.useTheToolToolItCan(tool) else L.miniapps.miniAppPermissions.useTheToolTool(tool), sensitive)
                     spec.optBoolean("readOnly") -> Info(L.miniapps.miniAppPermissions.picodevToolsServer(server), L.miniapps.miniAppPermissions.onlyItsReadOnlyTools, sensitive)
@@ -270,11 +281,28 @@ object MiniAppPermissions {
      */
     fun isProtected(context: Context, f: File, allowDot: Boolean = false): Boolean {
         val home = MiniApps.home(context).canonicalFile
+        if (isStartupPath(home, f)) return true
         if (within(f, MiniApps.dataRoot(context).canonicalFile)) return true
         if (within(f, File(home, ".picodev").canonicalFile)) return true
         if (within(f, MiniApps.appsDir(context).canonicalFile)) return true
         if (!allowDot && isHomeDotPath(context, f)) return true
         return !within(f, home) && !within(f, sharedRoot)
+    }
+
+    /** Shell start files in home: they run as Pico Dev in every new terminal. */
+    private val STARTUP_FILES = listOf(".bashrc", ".bash_profile", ".bash_login", ".profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".inputrc")
+
+    /** Folders whose contents run as Pico Dev later: plugins, Termux:Widget shortcuts, Termux settings and boot scripts. */
+    private val STARTUP_DIRS = listOf("extensions", ".shortcuts", ".termux", ".termux/boot")
+
+    /**
+     * Code that runs as Pico Dev later (plugins, shortcuts, shell start files): never reachable by a mini app, whatever it
+     * was granted ("all files" and folders declared in the manifest too), so a folder grant can't plant something that
+     * runs on the next start.
+     */
+    private fun isStartupPath(home: File, f: File): Boolean {
+        if (STARTUP_DIRS.any { within(f, File(home, it).canonicalFile) }) return true
+        return STARTUP_FILES.any { f.path == File(home, it).canonicalPath }
     }
 
     /** A folder declared in the manifest (not "all files", not picked) that lies in a hidden home folder: it may open that part of it. */

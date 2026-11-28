@@ -82,7 +82,7 @@ private fun openUrl(context: Context, url: String) {
 }
 
 /** What went wrong with the community list or a download, in the app's language. */
-private fun repoErrorText(e: Throwable?): String = when ((e as? LanguageRepo.RepoException)?.kind) {
+internal fun repoErrorText(e: Throwable?): String = when ((e as? LanguageRepo.RepoException)?.kind) {
     LanguageRepo.Kind.NOT_PUBLISHED -> L.settings.language.errNotPublished
     LanguageRepo.Kind.BAD_DATA -> L.settings.language.errBadData
     LanguageRepo.Kind.NEWER_APP -> L.settings.language.errNewerApp
@@ -92,11 +92,11 @@ private fun repoErrorText(e: Throwable?): String = when ((e as? LanguageRepo.Rep
 }
 
 /** "by Sita, Ram +2". */
-private fun byLine(authors: List<LanguageManager.Author>): String? = authors.takeIf { it.isNotEmpty() }?.let { list ->
+internal fun byLine(authors: List<LanguageManager.Author>): String? = authors.takeIf { it.isNotEmpty() }?.let { list ->
     L.settings.language.byAuthors(list.take(3).joinToString(", ") { it.name } + if (list.size > 3) " +${list.size - 3}" else "")
 }
 
-private fun shortDate(day: String): String = runCatching {
+internal fun shortDate(day: String): String = runCatching {
     val d = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(day) ?: return day
     java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(d)
 }.getOrDefault(day)
@@ -579,7 +579,7 @@ private fun LanguageRow(
 }
 
 @Composable
-private fun CodeBadge(code: String, size: androidx.compose.ui.unit.Dp = 42.dp) {
+internal fun CodeBadge(code: String, size: androidx.compose.ui.unit.Dp = 42.dp) {
     val primary = MaterialTheme.colorScheme.primary
     Box(
         Modifier.size(size).clip(RoundedCornerShape(12.dp)).background(primary.copy(alpha = 0.12f)),

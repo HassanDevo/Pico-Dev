@@ -813,7 +813,8 @@ class CodexChatBackend(
     }
 
     private suspend fun attachmentInput(a: ChatAttachment, project: String, inputs: MutableList<JsonObject>, notes: MutableList<String>) {
-        val b64 = a.base64
+        // its own data, or (a picture shown from a saved file) the file's
+        val b64 = ai.picodev.data.media.InlineMediaStore.base64Of(a)
         // a file by path is already listed in the message's text; only an image's shrunk copy is sent itself
         if (a.reference && b64.isNullOrBlank()) return
         if (b64.isNullOrBlank()) {

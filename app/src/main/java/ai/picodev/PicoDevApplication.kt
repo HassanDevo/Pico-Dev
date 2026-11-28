@@ -54,6 +54,8 @@ class PicoDevApplication : Application(), coil.ImageLoaderFactory {
         if (ai.picodev.crash.CrashHandler.isCrashProcess(this)) return
         // One broken subsystem must not stop the app before its first screen: log and skip that initializer.
         safeInit("AuthPreferences") { ai.picodev.data.preferences.AuthPreferences(this) }
+        // where chat pictures that arrive as data are kept as files (its trim runs in the background)
+        safeInit("InlineMediaStore") { ai.picodev.data.media.InlineMediaStore.init(this) }
         safeInit("ThemeManager") { ai.picodev.theme.ThemeManager.init(this) }
         safeInit("LanguageManager") { ai.picodev.i18n.LanguageManager.init(this) }
         safeInit("UpdateCheckWorker") { UpdateCheckWorker.schedule(this) }

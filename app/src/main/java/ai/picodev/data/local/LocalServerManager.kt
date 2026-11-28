@@ -214,7 +214,7 @@ object LocalServerManager {
         }
     }
 
-    private fun resolveServerCommand(context: Context): String? {
+    fun resolveServerCommand(context: Context): String? {
         val authPrefs = AuthPreferences(context)
         // the chroot is a plain Linux system with its own agent paths (Where agents run → Agent paths); blank = where
         // each agent's own installer puts it in the chroot's home
