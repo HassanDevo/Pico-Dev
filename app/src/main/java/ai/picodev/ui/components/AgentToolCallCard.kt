@@ -365,9 +365,11 @@ fun AgentToolCallCard(
         if (isImageOutput && !isRunning && (toolCall.output.isNotBlank() || isSuccess)) {
             val displayUri = resolvedImageUri.ifBlank { toolCall.output }
             val coilData: Any? = remember(displayUri, resolvedImageUri) {
+                    val cachedFile = HubMediaResolver.cachedFile(toolCall.output)
                     val memKey = HubMediaResolver.normalizeKey(toolCall.output)
                     val cachedBytes = HubMediaResolver.getImageBytes(memKey)
                     when {
+                        cachedFile != null -> cachedFile
                         cachedBytes != null -> cachedBytes
                         displayUri.startsWith("data:image/") -> {
                             try {

@@ -397,6 +397,7 @@ fun SettingsDialog(
     val mainMenuScrollState = rememberScrollState()
 
     // Intercept system Back button
+    LaunchedEffect(Unit) { ai.picodev.i18n.LanguageRepo.prewarm() }
     BackHandler(enabled = true) {
         if (currentSection != SettingsSection.MAIN) {
             currentSection = currentSection.parent

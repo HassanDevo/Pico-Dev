@@ -176,6 +176,82 @@ func TestMcpServersGoIntoTheConfig(t *testing.T) {
 	}
 }
 
+func TestMcpToggleOffPersistsAndIsListed(t *testing.T) {
+	home := t.TempDir()
+	m := NewManager(home, home, "")
+	for _, name := range []string{"zeta_mcp", "alpha_mcp"} {
+		res := doJSON(t, m, http.MethodPut, "/api/opencode/mcp/"+name, `{"type":"local","command":["tool"]}`)
+		if res["success"] != true {
+			t.Fatalf("add %s: %v", name, res)
+		}
+	}
+	// a skill off at the same time must keep its own deny policy
+	if err := m.setTurnedOff(t.Context(), "skill", "a-skill", true); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"zeta_mcp", "alpha_mcp", "from_user_config"} {
+		res := doJSON(t, m, http.MethodPatch, "/api/opencode/mcp/"+name, `{"enabled":false}`)
+		if res["success"] != true {
+			t.Fatalf("turn off %s: %v", name, res)
+		}
+	}
+	res := doJSON(t, m, http.MethodGet, "/api/opencode/mcp", "")
+	off, ok := res["off"].([]interface{})
+	if !ok || len(off) != 3 || off[0] != "alpha_mcp" || off[1] != "from_user_config" || off[2] != "zeta_mcp" {
+		t.Fatalf("off names not sorted: %v", res["off"])
+	}
+
+	data, _ := os.ReadFile(m.configPath())
+	var cfg struct {
+		Policies []struct {
+			Action   string `json:"action"`
+			Resource string `json:"resource"`
+			Effect   string `json:"effect"`
+		} `json:"policies"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	denied := map[string]bool{}
+	for _, p := range cfg.Policies {
+		if p.Effect == "deny" {
+			denied[p.Action+"/"+p.Resource] = true
+		}
+	}
+	for _, want := range []string{"mcp.use/alpha_mcp", "mcp.use/zeta_mcp", "mcp.use/from_user_config", "skill.use/a-skill"} {
+		if !denied[want] {
+			t.Fatalf("no deny policy %s: %s", want, data)
+		}
+	}
+
+	// turning one back on removes only its entry
+	if res := doJSON(t, m, http.MethodPatch, "/api/opencode/mcp/alpha_mcp", `{"enabled":true}`); res["success"] != true {
+		t.Fatalf("turn on: %v", res)
+	}
+	res = doJSON(t, m, http.MethodGet, "/api/opencode/mcp", "")
+	if off := res["off"].([]interface{}); len(off) != 2 || off[0] != "from_user_config" || off[1] != "zeta_mcp" {
+		t.Fatalf("off after re-enable: %v", res["off"])
+	}
+
+	// deleting a saved server clears its off entry too
+	if res := doJSON(t, m, http.MethodDelete, "/api/opencode/mcp/zeta_mcp", ""); res["success"] != true {
+		t.Fatalf("delete: %v", res)
+	}
+	res = doJSON(t, m, http.MethodGet, "/api/opencode/mcp", "")
+	if off := res["off"].([]interface{}); len(off) != 1 || off[0] != "from_user_config" {
+		t.Fatalf("off after delete: %v", res["off"])
+	}
+
+	// a malformed toggle is rejected without changing anything
+	req := httptest.NewRequest(http.MethodPatch, "/api/opencode/mcp/from_user_config", strings.NewReader(`{"enabled":`))
+	rec := httptest.NewRecorder()
+	m.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid JSON accepted: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBinaryPathTildeAndFallback(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".opencode", "bin", "opencode")

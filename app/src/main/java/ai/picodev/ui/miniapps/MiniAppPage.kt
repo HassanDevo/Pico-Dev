@@ -479,8 +479,8 @@ class MiniAppPage(private val host: MiniAppHost, app: MiniApp, override val path
         "net.abort" -> { MiniAppNet.abort(p.optString("rid")); null }
         "net.drop" -> { MiniAppNet.cancelStream(p.optString("sid")); null }
         "ws.open" -> { MiniAppNet.wsOpen(ctx, app, pageId, p) { emit("ws", it) }; null }
-        "ws.send" -> { MiniAppNet.wsSend(p); null }
-        "ws.close" -> { MiniAppNet.wsClose(p); null }
+        "ws.send" -> { MiniAppNet.wsSend(pageId, p); null }
+        "ws.close" -> { MiniAppNet.wsClose(pageId, p); null }
         // ---- files
         "fs.read", "fs.write", "fs.list", "fs.stat", "fs.exists", "fs.mkdir", "fs.delete", "fs.move" -> withContext(Dispatchers.IO) { MiniAppFs.call(ctx, app, m, p) }
         "fs.pickFolder" -> pickFolder()

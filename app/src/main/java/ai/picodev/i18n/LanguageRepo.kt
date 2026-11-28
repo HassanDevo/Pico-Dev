@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -87,6 +88,7 @@ object LanguageRepo {
     private val client by lazy { OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build() }
     private val refreshLock = Mutex()
     private var loadedCache = false
+    @Volatile private var prewarmed = false
     /** Installed file → (length, modified, SHA-256), so a hash is computed once per file version. */
     private val hashes = HashMap<String, Triple<Long, Long, String>>()
 
@@ -112,6 +114,27 @@ object LanguageRepo {
         if (packs.isNotEmpty()) return
         runCatching { cacheFile().takeIf { it.exists() }?.readText()?.let { packs = parse(it) } }
         recheck()
+    }
+
+    /**
+     * Reads the languages on the phone and the saved community list ahead of the Language page (when Settings opens),
+     * so the page opens complete instead of filling in while it slides in. Once per run; off the main thread.
+     */
+    suspend fun prewarm() {
+        if (prewarmed) return
+        prewarmed = true
+        try {
+            withContext(Dispatchers.IO) {
+                // Settings draws its first frames first
+                delay(250)
+                runCatching { LanguageManager.refreshList() }
+                refreshLock.withLock { runCatching { loadCached() } }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Settings closed right away: the next time it opens reads them
+            prewarmed = false
+            throw e
+        }
     }
 
     /**

@@ -155,8 +155,11 @@ object StepGroups {
 object ChatFeedCache {
     val cache = ConcurrentHashMap<String, List<ChatFeedItem>>()
 
+    private fun cacheKey(msg: ChatMessage): String =
+        "${msg.id}_${msg.content.hashCode()}_${msg.toolCalls.hashCode()}_${msg.thoughtText?.hashCode() ?: 0}_${msg.tokenUsage?.hashCode() ?: 0}"
+
     fun getOrParse(msg: ChatMessage): List<ChatFeedItem> {
-        val cacheKey = "${msg.id}_${msg.content.hashCode()}_${msg.toolCalls.hashCode()}_${msg.thoughtText?.hashCode() ?: 0}_${msg.tokenUsage?.hashCode() ?: 0}"
+        val cacheKey = cacheKey(msg)
         val cached = cache[cacheKey]
         if (cached != null) return cached
 
@@ -351,6 +354,20 @@ object ChatFeedCache {
         return result
     }
 
+    /**
+     * True when every finished message of [messages] is parsed already: its rows can then be built on the main thread
+     * at once without parsing anything (switching back to a chat, a chat that got a new id). Streaming messages grow
+     * while they are shown and do not count.
+     */
+    fun allParsed(messages: List<ChatMessage>): Boolean {
+        if (messages.isEmpty()) return true
+        for (m in messages) {
+            if (m.isStreaming) continue
+            if (!cache.containsKey(cacheKey(m))) return false
+        }
+        return true
+    }
+
     fun clear() {
         cache.clear()
     }
@@ -371,6 +388,39 @@ object ChatFeedCache {
         val skeleton = (if (year == thisYear) "EEEMMMd" else "EEEMMMdyyyy") + "Hmm"
         val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, skeleton)
         return java.text.SimpleDateFormat(pattern, locale).format(java.util.Date(millis))
+    }
+}
+
+/**
+ * What the chat's rows are built from: the chat on screen ([convKey]), its messages and what the dividers need. A new
+ * object whenever one of them changes (compared by identity, never field by field).
+ */
+class FeedInput(
+    val convKey: String,
+    val messages: List<ChatMessage>,
+    val selectedModelId: String,
+    val modelName: (String) -> String,
+    val voiceCalls: List<ChatFeedItem.VoiceCall>
+)
+
+/**
+ * The chat's rows together with the exact messages they were built from, for the chat [convKey]. Built off the main
+ * thread (ChatScreen), the list and everything that compares messages with rows (end of a reply, following it, the
+ * prompt just sent) read one snapshot, so the two can never be a frame apart.
+ */
+@Immutable
+class FeedSnapshot(
+    val convKey: String,
+    val messages: List<ChatMessage>,
+    val rows: List<ChatFeedItem>
+) {
+    companion object {
+        fun build(input: FeedInput): FeedSnapshot = FeedSnapshot(
+            input.convKey,
+            input.messages,
+            // the date and model dividers are always on
+            ChatFeedCache.buildFeedItems(input.messages, input.selectedModelId, dividers = true, modelName = input.modelName, voiceCalls = input.voiceCalls)
+        )
     }
 }
 

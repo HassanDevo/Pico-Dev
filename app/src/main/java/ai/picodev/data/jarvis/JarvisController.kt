@@ -2357,7 +2357,9 @@ object JarvisController {
                 val prefix = if (risky) L.jarvis.controller.carefulThisLooksRisky else ""
                 val question = L.jarvis.controller.prefixWhoWantsToSummaryApprove(prefix, who, p.summary) +
                     (if (risky) L.jarvis.controller.toApproveItSayYesRunIt else "")
-                val answer = ask(question)
+                // music and videos pause while the user answers, so they can't answer for them
+                JarvisVoice.holdMedia(true)
+                val answer = try { ask(question) } finally { JarvisVoice.holdMedia(false) }
                 // the screen went off or locked meanwhile: the answer may not be the user's
                 if (answer != null && !userPresent()) { waitForUnlock(p); continue }
                 when (JarvisYesNo.parse(answer, risky)) {

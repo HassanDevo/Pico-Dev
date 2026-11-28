@@ -20,10 +20,23 @@ object HubMediaResolver {
     private val imageRamCache = ConcurrentHashMap<String, String>()          // normalizedUri -> data:image/xxx;base64,...
     private val imageBytesCache = ConcurrentHashMap<String, ByteArray>()     // normalizedUri -> ByteArray
     private val documentRamCache = ConcurrentHashMap<String, String>()       // normalizedUri -> content string
+    /** normalized source → file it was resolved to (a phone file or a cached copy), for callers that need the File. */
+    private val resolvedFiles = ConcurrentHashMap<String, String>()
     private val downloadMutex = Mutex()
 
     fun normalizeKey(uriOrPath: String): String {
         return uriOrPath.trim().removePrefix("file://")
+    }
+
+    /** The file a source was resolved to in this process, or null if it was not resolved or the file is gone. */
+    fun cachedFile(uriOrPath: String): File? {
+        if (uriOrPath.isBlank()) return null
+        val key = normalizeKey(uriOrPath)
+        val uri = resolvedFiles[key] ?: return null
+        val file = File(uri.removePrefix("file://"))
+        if (file.isFile) return file
+        resolvedFiles.remove(key, uri)
+        return null
     }
 
     fun getCachedDocument(path: String): String? = documentRamCache[normalizeKey(path)]
@@ -211,6 +224,7 @@ object HubMediaResolver {
         imageRamCache.clear()
         imageBytesCache.clear()
         documentRamCache.clear()
+        resolvedFiles.clear()
     }
 
     /**
@@ -247,6 +261,7 @@ object HubMediaResolver {
         if (directFile.exists() && directFile.canRead()) {
             val res = "file://${directFile.absolutePath}"
             imageRamCache[key] = res
+            resolvedFiles[key] = res
             return res
         }
 
@@ -283,6 +298,7 @@ object HubMediaResolver {
         if (directFile.exists() && directFile.canRead()) {
             val localUri = "file://${directFile.absolutePath}"
             imageRamCache[key] = localUri
+            resolvedFiles[key] = localUri
             return@withContext localUri
         }
 

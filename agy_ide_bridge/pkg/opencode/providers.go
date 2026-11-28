@@ -180,10 +180,12 @@ func (m *Manager) writeConfig() error {
 	if servers, err := m.loadMcp(); err == nil && len(servers) > 0 {
 		cfg["mcp"] = map[string]interface{}{"servers": servers}
 	}
-	// skills turned off in the app: OpenCode's "skill.use" deny policy takes them out of every chat
+	// skills and MCP servers turned off in the app: OpenCode's policies take a denied one out of every chat
 	var policies []map[string]string
-	for _, id := range m.loadTurnedOff("skill") {
-		policies = append(policies, map[string]string{"action": "skill.use", "resource": id, "effect": "deny"})
+	for _, kind := range []string{"skill", "mcp"} {
+		for _, id := range m.loadTurnedOff(kind) {
+			policies = append(policies, map[string]string{"action": kind + ".use", "resource": id, "effect": "deny"})
+		}
 	}
 	if len(policies) > 0 {
 		cfg["policies"] = policies
@@ -191,8 +193,8 @@ func (m *Manager) writeConfig() error {
 	return writePrivate(m.configPath(), cfg)
 }
 
-// Skills turned off in the app, kept in the bridge's config like the custom providers. OpenCode's skill id is the
-// skill's folder name. (The same store is used for MCP servers' "mcp.use" policy by the MCP-page batch.)
+// Skills and MCP servers turned off in the app, kept in the bridge's config like the custom providers. OpenCode's
+// skill id is the skill's folder name; an MCP server is its name (the user's own config's servers too).
 
 func (m *Manager) turnedOffPath(kind string) string {
 	if kind == "mcp" {
@@ -668,8 +670,9 @@ func (m *Manager) loadMcp() (map[string]json.RawMessage, error) {
 
 var mcpNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
-// handleMcp: GET /api/opencode/mcp (the saved servers and OpenCode's live status), PUT /api/opencode/mcp/{name}
-// {"type":"remote","url":…,"headers":{…}} or {"type":"local","command":[…]}, DELETE /api/opencode/mcp/{name}.
+// handleMcp: GET /api/opencode/mcp (the saved servers, OpenCode's live status and the "off" names), PUT
+// /api/opencode/mcp/{name} {"type":"remote","url":…,"headers":{…}} or {"type":"local","command":[…]}, PATCH
+// /api/opencode/mcp/{name} {"enabled":bool} (any server, the user's own config's too), DELETE /api/opencode/mcp/{name}.
 func (m *Manager) handleMcp(w http.ResponseWriter, r *http.Request, name string) {
 	m.provMu.Lock()
 	servers, err := m.loadMcp()
@@ -680,7 +683,13 @@ func (m *Manager) handleMcp(w http.ResponseWriter, r *http.Request, name string)
 	}
 	switch {
 	case name == "" && r.Method == http.MethodGet:
-		resp := map[string]interface{}{"success": true, "servers": servers}
+		off := []string{}
+		for n := range m.turnedOff("mcp") {
+			off = append(off, n)
+		}
+		sort.Strings(off)
+		// a turned-off server is left out of OpenCode's live list: "off" tells the app it is there, but off
+		resp := map[string]interface{}{"success": true, "servers": servers, "off": off}
 		if m.Running() {
 			var live json.RawMessage
 			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -690,6 +699,20 @@ func (m *Manager) handleMcp(w http.ResponseWriter, r *http.Request, name string)
 			}
 		}
 		writeJSON(w, http.StatusOK, resp)
+		return
+	case name != "" && r.Method == http.MethodPatch:
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]interface{}{"success": false, "error": "invalid JSON"})
+			return
+		}
+		if err := m.setTurnedOff(r.Context(), "mcp", name, !body.Enabled); err != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 		return
 	case name != "" && r.Method == http.MethodPut:
 		if !mcpNameRe.MatchString(name) {
@@ -720,6 +743,11 @@ func (m *Manager) handleMcp(w http.ResponseWriter, r *http.Request, name string)
 		servers[name] = raw
 	case name != "" && r.Method == http.MethodDelete:
 		delete(servers, name)
+		// a removed server leaves no "off" behind
+		if err := m.setTurnedOff(r.Context(), "mcp", name, false); err != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+			return
+		}
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]interface{}{"success": false, "error": "method not allowed"})
 		return
