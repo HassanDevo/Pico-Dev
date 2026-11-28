@@ -49,11 +49,11 @@ object PluginVersions {
 }
 
 /**
- * The user's plugin repositories and what each offers. Listing (from a repo's `picodev-plugins.json`, or its
+ * The user's plugin repositories and what each offers. Listing (from a repo's `Plugins/picodev-plugins.json`, or its
  * top-level folders with a manifest.json) and installing a single folder are done by the IDE bridge.
  */
 object PluginRepositories {
-    const val INDEX = "Plugins/Pico Dev-plugins.json"
+    const val INDEX = "Plugins/picodev-plugins.json"
     private const val PREFS = "plugin_repositories"
     /**
      * The official repositories, each added once (for new and existing users) under its own "added" flag, so a
