@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -52,6 +53,10 @@ type Manager struct {
 	startErr  error
 	startedAt time.Time
 	logs      []string
+	// stopping keeps the exit watchdog from restarting a server that Stop/StopAll deliberately killed.
+	stopping bool
+	// lastRestart rate-limits the watchdog, so a binary that dies immediately cannot spin in a tight loop.
+	lastRestart time.Time
 
 	verMu      sync.Mutex
 	verBin     string
@@ -322,6 +327,58 @@ func (m *Manager) Ensure(ctx context.Context) error {
 	}
 }
 
+// AutoStart brings `opencode serve` up with the bridge itself when the binary is already installed. A missing binary
+// is normal before the user installs OpenCode from Settings; the next Ensure() starts it as soon as it exists.
+func (m *Manager) AutoStart() {
+	if m == nil {
+		return
+	}
+	if _, err := m.ResolveBinary(); err != nil {
+		log.Printf("[OpenCode] not starting with the bridge: %v", err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout+10*time.Second)
+		defer cancel()
+		if err := m.Ensure(ctx); err != nil {
+			log.Printf("[OpenCode] auto-start failed: %v", err)
+		}
+	}()
+}
+
+// autoRestart is called when a running server exits on its own (never when Stop set stopping).
+func (m *Manager) autoRestart() {
+	m.mu.Lock()
+	stopping := m.stopping
+	if !stopping && time.Since(m.lastRestart) < 3*time.Second {
+		m.mu.Unlock()
+		m.addLog("OpenCode exited; auto-restart is on cooldown")
+		return
+	}
+	if !stopping {
+		m.lastRestart = time.Now()
+	}
+	m.mu.Unlock()
+	if stopping {
+		return
+	}
+	m.addLog("OpenCode exited unexpectedly; restarting it automatically")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout+10*time.Second)
+		defer cancel()
+		// The process may have died while the first start still held `starting`; retry once after it settles.
+		for attempt := 0; attempt < 2; attempt++ {
+			if err := m.Ensure(ctx); err == nil {
+				return
+			} else if ctx.Err() != nil {
+				m.addLog("OpenCode auto-restart gave up: " + err.Error())
+				return
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}()
+}
+
 func (m *Manager) start() error {
 	bin, err := m.ResolveBinary()
 	if err != nil {
@@ -369,6 +426,8 @@ func (m *Manager) start() error {
 	go func() {
 		_ = cmd.Wait()
 		close(exited)
+		// The server must survive a crash on its own, not only on the next chat request.
+		m.autoRestart()
 	}()
 
 	m.mu.Lock()
@@ -401,8 +460,18 @@ func (m *Manager) start() error {
 // Stop ends the server and everything it started (shells, MCP servers).
 func (m *Manager) Stop() {
 	m.mu.Lock()
+	if m.stopping {
+		m.mu.Unlock()
+		return
+	}
+	m.stopping = true
 	cmd, exited := m.cmd, m.exited
 	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.stopping = false
+		m.mu.Unlock()
+	}()
 	if cmd == nil || cmd.Process == nil {
 		return
 	}

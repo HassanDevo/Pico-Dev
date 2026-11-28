@@ -69,8 +69,9 @@ object LocalEnvironmentManager {
 
     private const val TAG = "LocalEnvironmentManager"
     private const val BOOTSTRAP_VERSION = "2026.08"
-    /** Written when an existing installation has had its old-prefix paths and permissions repaired. */
-    private const val BOOTSTRAP_FIX_MARKER = ".picodev-bootstrap-fix-v2"
+    /** Written when an existing installation has had its old-prefix paths, permissions and symlinks repaired. */
+    private const val BOOTSTRAP_FIX_MARKER = ".picodev-bootstrap-fix-v3"
+    private const val BOOTSTRAP_FIX_VERSION = "v3\n"
     // Minimum 10 MB required for a real Termux bootstrap archive
     private const val MIN_BOOTSTRAP_SIZE_BYTES = 10 * 1024 * 1024L
     /** Unpacked size per archive byte, for an archive whose unpacked size can't be read (the rootfs ZIPs are ~3.1). */
@@ -219,9 +220,13 @@ object LocalEnvironmentManager {
     /** ZIPs from Termux store binaries as 0700 and shared libraries as 0600: both need 0755 after extraction. */
     private val chmodSkippedExtensions = setOf("apk", "jar", "dex", "zip", "whl", "aar", "jmod")
 
-    /** After extraction/relocation: every executable tree (and every shared library) is 0755; links are left alone. */
+    /**
+     * After extraction/relocation: every executable tree (and every shared library) is 0755, links are left alone.
+     * `glibc` is included because the official OpenCode build is launched through `$PREFIX/glibc/lib/ld-linux-*`;
+     * a 0600 loader or library there fails with "Permission denied" even when usr/bin is fine.
+     */
     private fun ensureBootstrapExecutables(prefixDir: File) {
-        for (dirName in listOf("bin", "libexec", "lib", "applets", "sbin")) {
+        for (dirName in listOf("bin", "libexec", "lib", "applets", "sbin", "glibc")) {
             val dir = File(prefixDir, dirName)
             if (!dir.exists()) continue
             val pending = ArrayDeque<File>().apply { add(dir) }
@@ -251,25 +256,59 @@ object LocalEnvironmentManager {
     }
 
     /**
-     * Self-heal an environment installed by an older build: rewrite the rootfs's old absolute prefix and repair
-     * permissions before a shell or the server is started. Runs once (the marker survives app updates), and also
-     * right after a fresh extraction, where the marker is written by the installer.
+     * Quick check before a shell or the server starts. The marker alone is not enough: an update, a partial repair or
+     * a user change can leave login non-executable or bin/sh missing even though a repair once completed.
      */
+    private fun bootstrapRuntimeHealthy(prefixDir: File): Boolean {
+        fun executableAndReadable(file: File) = file.isFile && file.canExecute() && file.canRead()
+        fun getHomeDirForCheck(): File = File(prefixDir.parentFile, "home")
+        for (name in listOf("login", "bash", "sh", "dash")) {
+            val file = File(prefixDir, "bin/$name")
+            if (file.exists() && !executableAndReadable(file) && !isSymlink(file)) return false
+        }
+        val support = File(prefixDir, "lib/libandroid-support.so")
+        if (support.exists() && !support.canRead()) return false
+        val loaderName = if (ai.picodev.BuildConfig.TARGET_ABI == "x86_64") "ld-linux-x86-64.so.2" else "ld-linux-aarch64.so.1"
+        val loader = File(prefixDir, "glibc/lib/$loaderName")
+        if (loader.exists() && !executableAndReadable(loader)) return false
+        // login's shebang needs bin/sh; a missing SYMLINKS.txt link is exactly the EACCES/ENOENT case we must fix.
+        // Verify every listed link, not just sh: a partial extraction must not survive behind a repair marker.
+        val listFile = File(prefixDir, "SYMLINKS.txt")
+        if (listFile.isFile) {
+            for (line in listFile.readLines()) {
+                val parts = line.trim().split("←")
+                if (parts.size != 2) continue
+                val name = parts[0].trim()
+                if (name.isBlank()) continue
+                val link = rootfsTarget(name.removePrefix("./"), prefixDir, getHomeDirForCheck()) ?: return false
+                if (!isSymlink(link)) return false
+            }
+        }
+        return true
+    }
+
+    /**
+     * Self-heal the environment before a shell or the server starts. A fresh install already writes the marker after
+     * extraction; an older install is repaired here. The marker is versioned and the few critical files are verified
+     * every time, so a stale or half-repaired environment cannot stay broken for the life of the install.
+     */
+    @Synchronized
     fun ensureBootstrapRuntime(context: Context) {
         val prefixDir = getPrefixDir(context)
         if (!prefixDir.isDirectory) return
         val marker = File(prefixDir, BOOTSTRAP_FIX_MARKER)
-        if (marker.exists()) return
+        if (marker.exists() && runCatching { marker.readText().trim() }.getOrDefault("") == BOOTSTRAP_FIX_VERSION.trim() &&
+            runCatching { bootstrapRuntimeHealthy(prefixDir) }.getOrDefault(false)) return
         val pkg = TermuxRelocation.targetPackage(context) ?: return
         try {
-            log("Repairing bootstrap prefix and permissions for $pkg...")
+            log("Repairing bootstrap prefix, permissions and symlinks for $pkg...")
             val homeDir = getHomeDir(context)
             val usr = TermuxRelocation.relocateTree(prefixDir, pkg, releasePaths = true)
             val home = if (homeDir.isDirectory) TermuxRelocation.relocateTree(homeDir, pkg, pathsOnly = true, releasePaths = true) else TermuxRelocation.Stats()
             ensureBootstrapExecutables(prefixDir)
             applySymlinksTxt(prefixDir, homeDir)
-            log("✓ Repaired ${usr.patchedFiles + home.patchedFiles} files and ${usr.links + home.links} symlinks; 0755 on bin, libexec and lib")
-            marker.writeText("v2\n")
+            log("✓ Repaired ${usr.patchedFiles + home.patchedFiles} files and ${usr.links + home.links} symlinks; 0755 on bin, libexec, lib, applets, sbin and glibc/lib")
+            marker.writeText(BOOTSTRAP_FIX_VERSION)
         } catch (e: Exception) {
             Log.w(TAG, "Bootstrap repair failed: ${e.message}")
             log("⚠ Bootstrap repair failed: ${e.message}")
@@ -277,7 +316,7 @@ object LocalEnvironmentManager {
     }
 
     /**
-     * Termux bootstrap ZIPs list `link-name←relative/path` pairs in SYMLINKS.txt. A copy is kept in usr/ so the
+     * Termux bootstrap ZIPs list `target←link/path` pairs in SYMLINKS.txt. A copy is kept in usr/ so the
      * links can be recreated on a later repair too; embedded ZIP/tar symlinks need no list.
      */
     private fun applySymlinksTxt(prefixDir: File, homeDir: File) {
@@ -1614,9 +1653,9 @@ object LocalEnvironmentManager {
 
             // symlinks have been created: now make every file in usr/bin, usr/libexec and usr/lib (shared libraries
             // included) readable and executable, so no shell or dynamic linker hits "Permission denied".
-            log("Setting 0755 on usr/bin, usr/libexec and usr/lib...")
+            log("Setting 0755 on usr/bin, usr/libexec, usr/lib and usr/glibc/lib...")
             ensureBootstrapExecutables(prefixDir)
-            File(prefixDir, BOOTSTRAP_FIX_MARKER).writeText("v2\n")
+            File(prefixDir, BOOTSTRAP_FIX_MARKER).writeText(BOOTSTRAP_FIX_VERSION)
 
             // Clean up downloaded zip
             tempZipFile.delete()

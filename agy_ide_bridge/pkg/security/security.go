@@ -55,7 +55,8 @@ func BuildFramedHeader(token string) string {
 func getTokenFilePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		home = "/data/data/com.termux/files/home"
+		// Never fall back into another app's private data directory. The bridge normally runs with HOME set.
+		home = filepath.Join(os.TempDir(), "picodev-home")
 	}
 	return filepath.Join(home, ".picodev_bridge", "csrf_token.txt")
 }

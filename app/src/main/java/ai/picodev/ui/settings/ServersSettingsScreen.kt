@@ -98,19 +98,23 @@ import ai.picodev.i18n.L
 // Local (the phone runs the bridge) or Remote (a VPS runs it and the app manages it over SSH)
 // ==========================================
 
-private fun describeNetworkError(e: Throwable): String = when (e) {
-    is java.net.UnknownHostException -> L.settings.serversSettings.unknownHostName
-    is java.net.SocketTimeoutException -> L.settings.serversSettings.timedOutFirewallOrWrongPort
-    is java.net.ConnectException -> L.settings.serversSettings.connectionRefusedIsTheServiceRunning
-    is javax.net.ssl.SSLException -> L.settings.serversSettings.tlsProblemValue(e.message?.take(80))
-    is java.net.SocketException, is java.io.EOFException ->
-        L.settings.serversSettings.theConnectionWasClosedAProxy
-    else -> {
-        val m = e.message.orEmpty()
-        if (m.contains("unexpected end of stream", true) || m.contains("connection reset", true))
-            L.settings.serversSettings.theConnectionWasClosedWithNo
-        else m.take(100).ifBlank { e.javaClass.simpleName }
+private fun describeNetworkError(e: Throwable): String {
+    // Show the real failure, not just a red dot: the friendly explanation comes first, the actual exception after it.
+    val actual = listOfNotNull(e.javaClass.simpleName, e.message?.take(300)).joinToString(": ")
+    val friendly = when (e) {
+        is java.net.UnknownHostException -> L.settings.serversSettings.unknownHostName
+        is java.net.SocketTimeoutException -> L.settings.serversSettings.timedOutFirewallOrWrongPort
+        is java.net.ConnectException -> L.settings.serversSettings.connectionRefusedIsTheServiceRunning
+        is javax.net.ssl.SSLException -> L.settings.serversSettings.tlsProblemValue(e.message?.take(120))
+        is java.net.SocketException, is java.io.EOFException -> L.settings.serversSettings.theConnectionWasClosedAProxy
+        else -> {
+            val m = e.message.orEmpty()
+            if (m.contains("unexpected end of stream", true) || m.contains("connection reset", true))
+                L.settings.serversSettings.theConnectionWasClosedWithNo
+            else actual
+        }
     }
+    return if (friendly == actual || actual.isBlank()) friendly else "$friendly ($actual)"
 }
 
 /** HTTP reachability of the hub address (any answer below 500 means something answers; 502-504 is a proxy that cannot reach the hub). */
@@ -120,11 +124,21 @@ private suspend fun probeHub(url: String, edge: Pair<String, String>? = null): P
         edge?.let { conn.setRequestProperty(it.first, it.second) }
         conn.connectTimeout = 10_000
         conn.readTimeout = 10_000
-        val code = try { conn.responseCode } finally { conn.disconnect() }
+        val code: Int
+        // A failing hub/bridge often puts the real reason in the response body; show it instead of only the code.
+        val body: String
+        try {
+            code = conn.responseCode
+            body = runCatching { conn.errorStream?.bufferedReader()?.use { it.readText() } }.getOrNull()
+                ?.replace(Regex("\\s+"), " ")?.take(240).orEmpty()
+        } finally {
+            conn.disconnect()
+        }
+        val withBody = body.takeIf { it.isNotBlank() }?.let { " — $it" }.orEmpty()
         when {
-            code in 502..504 -> false to L.settings.serversSettings.theProxyAnsweredCodeItCannot(code)
+            code in 502..504 -> false to L.settings.serversSettings.theProxyAnsweredCodeItCannot(code) + withBody
             code in 200..499 -> true to L.settings.serversSettings.answeredHttpCode(code)
-            else -> false to L.settings.serversSettings.answeredHttpCode(code)
+            else -> false to L.settings.serversSettings.answeredHttpCode(code) + withBody
         }
     } catch (e: Exception) {
         false to describeNetworkError(e)
@@ -134,12 +148,17 @@ private suspend fun probeHub(url: String, edge: Pair<String, String>? = null): P
 /** Health + token check of the bridge, using the token typed in the field (even before it is saved). */
 private suspend fun probeBridge(base: String, token: String, edge: Pair<String, String>? = null): Pair<Boolean, String> = withContext(Dispatchers.IO) {
     val client = OkHttpClient.Builder()
+        .proxySelector(ai.picodev.data.remote.core.LocalDirectProxySelector)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS).callTimeout(15, TimeUnit.SECONDS)
         .build()
     try {
         val health = client.newCall(Request.Builder().url("${base.trimEnd('/')}/api/health").apply { edge?.let { header(it.first, it.second) } }.build()).execute()
         health.use {
-            if (!it.isSuccessful) return@withContext false to L.settings.serversSettings.healthCheckAnsweredHttpCode(it.code)
+            if (!it.isSuccessful) {
+                val body = runCatching { it.body?.string() }.getOrNull()?.replace(Regex("\\s+"), " ")?.take(240).orEmpty()
+                return@withContext false to L.settings.serversSettings.healthCheckAnsweredHttpCode(it.code) +
+                    body.takeIf { s -> s.isNotBlank() }?.let { s -> " — $s" }.orEmpty()
+            }
         }
         val header = AuthPreferences.buildFramedHeader(token)
         val info = client.newCall(
@@ -157,13 +176,50 @@ private suspend fun probeBridge(base: String, token: String, edge: Pair<String, 
                 401 -> false to "reachable, but the token was rejected: either it differs from the one the server was started with, or the proxy drops headers with an underscore (nginx needs underscores_in_headers on;)"
                 404 -> true to L.settings.serversSettings.reachableOlderBridgeWithoutServerInfo
                 429 -> false to L.settings.serversSettings.blockedForAWhileAfterToo
-                else -> false to L.settings.serversSettings.infoAnsweredHttpCode(it.code)
+                else -> {
+                    val body = runCatching { it.body?.string() }.getOrNull()?.replace(Regex("\\s+"), " ")?.take(240).orEmpty()
+                    false to L.settings.serversSettings.infoAnsweredHttpCode(it.code) +
+                        body.takeIf { s -> s.isNotBlank() }?.let { s -> " — $s" }.orEmpty()
+                }
             }
         }
     } catch (e: Exception) {
         false to describeNetworkError(e)
     }
 }
+
+/**
+ * The hub's own process error: the Go bridge collects the hub binary's stderr and exit status in /api/status. Showing
+ * this next to Test Hub makes a red dot explain itself instead of only saying that nothing answered on the port.
+ */
+private suspend fun probeHubProcessError(bridgeUrl: String?, token: String, edge: Pair<String, String>? = null): String? =
+    withContext(Dispatchers.IO) {
+        if (bridgeUrl.isNullOrBlank()) return@withContext null
+        try {
+            val client = OkHttpClient.Builder()
+                .proxySelector(ai.picodev.data.remote.core.LocalDirectProxySelector)
+                .connectTimeout(3, TimeUnit.SECONDS).readTimeout(3, TimeUnit.SECONDS).build()
+            val request = Request.Builder().url(bridgeUrl.trimEnd('/') + "/api/status")
+                .header(AuthPreferences.buildFramedHeader(token), "true")
+                .apply { edge?.let { header(it.first, it.second) } }.build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext "bridge status HTTP ${response.code}"
+                val hub = JSONObject(response.body?.string().orEmpty()).optJSONObject("hub") ?: return@withContext null
+                val status = hub.optString("status").orEmpty()
+                val error = hub.optString("error").orEmpty().replace(Regex("\\s+"), " ").take(300)
+                val logs = hub.optJSONArray("logs")?.let { arr ->
+                    (0 until arr.length()).mapNotNull { arr.optString(it).takeIf { s -> s.isNotBlank() } }.takeLast(3)
+                }.orEmpty()
+                listOfNotNull(
+                    status.takeIf { it.isNotBlank() && it != "online" }?.let { "status=$it" },
+                    error.takeIf { it.isNotBlank() },
+                    logs.joinToString(" | ").takeIf { it.isNotBlank() }
+                ).joinToString(" — ").takeIf { it.isNotBlank() }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
 
 @Composable
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
@@ -806,8 +862,13 @@ internal fun ServersSubScreen(
                             hubTestStatus = "Contacting $url…"
                             coroutineScope.launch {
                                 val (ok, msg) = probeHub(url, edgeOrNull())
+                                val processError = probeHubProcessError(
+                                    AuthPreferences.normalizeServerUrl(bridgeText, BuildConfig.BRIDGE_PORT),
+                                    securityToken, edgeOrNull()
+                                )
+                                val detail = processError?.let { " — $it" }.orEmpty()
                                 isTestingHub = false
-                                hubTestStatus = if (ok) "✓ Hub reachable ($msg)" else "✗ Hub: $msg"
+                                hubTestStatus = (if (ok) "✓ Hub reachable ($msg)" else "✗ Hub: $msg") + detail
                             }
                         },
                         modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), enabled = !isTestingHub
@@ -823,8 +884,12 @@ internal fun ServersSubScreen(
                             bridgeTestStatus = "Contacting $url…"
                             coroutineScope.launch {
                                 val (ok, msg) = probeBridge(url, securityToken, edgeOrNull())
+                                // The bridge is up even when the hub it supervises is not; show the hub's real exit
+                                // error here too so a reachable bridge cannot hide a dead AGY Hub.
+                                val processError = probeHubProcessError(url, securityToken, edgeOrNull())
+                                val detail = processError?.let { " — hub: $it" }.orEmpty()
                                 isTestingBridge = false
-                                bridgeTestStatus = if (ok) "✓ Bridge reachable ($msg)" else "✗ Bridge: $msg"
+                                bridgeTestStatus = (if (ok) "✓ Bridge reachable ($msg)" else "✗ Bridge: $msg") + detail
                             }
                         },
                         modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp), enabled = !isTestingBridge

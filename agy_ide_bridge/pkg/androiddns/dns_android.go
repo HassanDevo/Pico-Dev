@@ -18,10 +18,16 @@ func init() {
 		return
 	}
 	var files []string
-	if prefix := os.Getenv("PREFIX"); prefix != "" {
+	prefix := os.Getenv("PREFIX")
+	if prefix == "" {
+		// The bridge is launched with PREFIX, but keep a home-derived fallback: never another app's private directory.
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			prefix = filepath.Join(filepath.Dir(home), "usr")
+		}
+	}
+	if prefix != "" {
 		files = append(files, filepath.Join(prefix, "etc", "resolv.conf"))
 	}
-	files = append(files, "/data/data/com.termux/files/usr/etc/resolv.conf")
 	var servers []string
 	for _, f := range files {
 		if servers = readNameservers(f); len(servers) > 0 {

@@ -107,6 +107,7 @@ sealed class AgyStreamEvent {
 
 class AgyBridgeService(
     val client: OkHttpClient = OkHttpClient.Builder()
+        .proxySelector(ai.picodev.data.remote.core.LocalDirectProxySelector)
         .connectTimeout(if (AuthPreferences.isRemoteEndpoint()) 12 else 5, TimeUnit.SECONDS)
         .readTimeout(if (AuthPreferences.isRemoteEndpoint()) 60 else 30, TimeUnit.SECONDS)
         .writeTimeout(if (AuthPreferences.isRemoteEndpoint()) 60 else 30, TimeUnit.SECONDS)
@@ -127,11 +128,23 @@ class AgyBridgeService(
     companion object {
         const val TAG = "AgyBridgeService"
         val instance by lazy { AgyBridgeService() }
+
+        /**
+         * The bridge's WebSocket endpoint for [base] (the bridge's ws:// address): /ws, the only path the bridge upgrades
+         * (the catch-all / serves plain text, so a handshake there always fails and the app reports the hub as down).
+         * [hubCsrf]: also ask the bridge to include the AGY hub's CSRF value in hub_status.
+         */
+        fun wsEndpoint(base: String, hubCsrf: Boolean = false): String {
+            val root = base.substringBefore('?').trimEnd('/')
+            val url = if (root.endsWith("/ws")) root else "$root/ws"
+            return if (hubCsrf) "$url?hub_csrf=1" else url
+        }
     }
 
     // Short timeouts for health/status checks, but long enough for the Go bridge to start on this phone; a remote
     // server still gets a network-grade budget (a TLS handshake over mobile data cannot finish in a few seconds)
     val fastClient: OkHttpClient = OkHttpClient.Builder()
+        .proxySelector(ai.picodev.data.remote.core.LocalDirectProxySelector)
         .connectTimeout(if (AuthPreferences.isRemoteEndpoint()) 8000 else 2000, TimeUnit.MILLISECONDS)
         .readTimeout(if (AuthPreferences.isRemoteEndpoint()) 10000 else 3000, TimeUnit.MILLISECONDS)
         .writeTimeout(if (AuthPreferences.isRemoteEndpoint()) 10000 else 3000, TimeUnit.MILLISECONDS)
@@ -152,6 +165,7 @@ class AgyBridgeService(
     // Dedicated WebSocket client for live bridge monitoring with 1s connect timeout and 1s heartbeat ping
     // (remote: 10s connect and a 15s heartbeat, so mobile-network hiccups reconnect instead of flapping Offline)
     val wsClient: OkHttpClient = OkHttpClient.Builder()
+        .proxySelector(ai.picodev.data.remote.core.LocalDirectProxySelector)
         .connectTimeout(if (AuthPreferences.isRemoteEndpoint()) 10000 else 1000, TimeUnit.MILLISECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(if (AuthPreferences.isRemoteEndpoint()) 10 else 3, TimeUnit.SECONDS)
@@ -473,7 +487,7 @@ class AgyBridgeService(
         }
 
     fun monitorHubStatus(wsUrl: String = AuthPreferences.currentBridgeWsUrl): Flow<AgyHubStatus> = callbackFlow {
-        val request = Request.Builder().url(wsUrl).build()
+        val request = Request.Builder().url(wsEndpoint(wsUrl, hubCsrf = true)).build()
         val wsListener = object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isBridgeConnected = true
@@ -1010,7 +1024,7 @@ class AgyBridgeService(
             return@callbackFlow
         }
         _connectionState.value = BridgeConnectionState.CONNECTING
-        val request = Request.Builder().url(wsUrl).build()
+        val request = Request.Builder().url(wsEndpoint(wsUrl)).build()
 
         var assignedConversationId = conversationId
         val activeToolsMap = mutableMapOf<String, ToolCall>()
@@ -1276,7 +1290,7 @@ class AgyBridgeService(
             return@callbackFlow
         }
         _connectionState.value = BridgeConnectionState.CONNECTING
-        val request = Request.Builder().url(wsUrl).build()
+        val request = Request.Builder().url(wsEndpoint(wsUrl)).build()
         val activeToolsMap = mutableMapOf<String, ToolCall>()
 
         val wsListener = object : WebSocketListener() {

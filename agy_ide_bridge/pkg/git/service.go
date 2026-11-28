@@ -33,9 +33,23 @@ func getGitBinary() string {
 	return cachedGitBinary
 }
 
+// localUsrBin is this app's Linux bin directory, derived from the runtime prefix (never a hard-coded package path).
+func localUsrBin() string {
+	prefix := os.Getenv("PREFIX")
+	if prefix == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			prefix = filepath.Join(filepath.Dir(home), "usr")
+		}
+	}
+	if prefix == "" {
+		return "/usr/bin"
+	}
+	return filepath.Join(prefix, "bin")
+}
+
 func getEnv() []string {
 	env := os.Environ()
-	termuxBin := "/data/data/com.termux/files/usr/bin"
+	termuxBin := localUsrBin()
 	home, _ := os.UserHomeDir()
 	localBin := filepath.Join(home, ".local", "bin")
 	geminiBin := filepath.Join(home, ".gemini", "bin")

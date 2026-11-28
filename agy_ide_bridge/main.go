@@ -767,6 +767,11 @@ func main() {
 		}
 	}
 
+	// OpenCode serves every chat, so bring it up with the bridge too (and let its watchdog restart it after a crash).
+	if openCodeMgr != nil {
+		openCodeMgr.AutoStart()
+	}
+
 	<-stopChan
 	fmt.Println("\n🛑 Shutting down picoDev server gracefully...")
 

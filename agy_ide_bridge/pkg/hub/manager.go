@@ -80,6 +80,8 @@ type HubManager struct {
 	agyMissing bool
 	// stopping: Stop is ending the hub this manager started, so its exit ("signal: killed") is a stop, not an error
 	stopping bool
+	// lastRestart: a guard against a tight crash loop when a broken hub exits immediately every time
+	lastRestart time.Time
 	// for the app's diagnostics after a failed call: when this hub process started, how the last one ended, and
 	// what a crash printed (kept apart from recentLogs, whose 50 lines a long goroutine dump would fill)
 	startedAt    time.Time
@@ -448,6 +450,7 @@ func (m *HubManager) StartContinuousMonitor() {
 		missingTicks := 0
 		failedProbes := 0
 		for {
+			restartHub := false
 			interval := 1 * time.Second
 			m.mu.Lock()
 			missing := m.agyMissing
@@ -513,11 +516,32 @@ func (m *HubManager) StartContinuousMonitor() {
 						m.csrfToken = ""
 						m.setStatusLocked(HubStatusStopped, "")
 						log.Printf("\033[1;33m[Hub Monitor]\033[0m ⚠️ AGY Hub port %s became unreachable -> marked STOPPED", m.HubPort)
+						// A hub that crashed must come back by itself. Stop() sets stopping, so an intentional
+						// shutdown never triggers this; Start() may wait minutes for readiness, so never inline.
+						if !ownAlive && !m.stopping && !m.Disabled && time.Since(m.lastRestart) > 5*time.Second {
+							m.lastRestart = time.Now()
+							restartHub = true
+						}
 					default:
 						failedProbes = 0
+						// a crashed hub is reported as Error by the exit supervisor before this monitor sees the
+						// port go away, so restart from here too (agyMissing means it was never installed: skip)
+						if currentStatus == HubStatusError && !ownAlive && !m.stopping && !m.Disabled && !m.agyMissing &&
+							time.Since(m.lastRestart) > 5*time.Second {
+							m.lastRestart = time.Now()
+							restartHub = true
+						}
 					}
 				}
 				m.mu.Unlock()
+				if restartHub {
+					log.Printf("\033[1;33m[Hub Monitor]\033[0m ↻ Restarting AGY Hub after it exited")
+					go func() {
+						if err := m.Start(); err != nil {
+							log.Printf("\033[1;31m[Hub Monitor]\033[0m Hub restart failed: %v", err)
+						}
+					}()
+				}
 			}
 		}
 	}()

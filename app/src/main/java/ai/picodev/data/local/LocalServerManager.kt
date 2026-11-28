@@ -272,7 +272,9 @@ object LocalServerManager {
         // agents switched off in the app never run (no AGY hub / no Claude Code endpoints)
         val agentFlags = ai.picodev.data.agent.AgentPreferences.bridgeFlags(context)
 
-        return "$bridgeCmd -f --token $token -p $bridgePort --hub-port $hubPort --tz-offset $tzOffset$binParam$claudeBinParam$openCodeBinParam$codexBinParam$agentFlags"
+        // --no-proxy-headers: on the phone every app reaches the bridge on loopback, so X-Forwarded-For can't be trusted
+        // (it would let them get around the failure limit); an older bridge ignores the flag
+        return "$bridgeCmd -f --token $token -p $bridgePort --hub-port $hubPort --tz-offset $tzOffset --no-proxy-headers$binParam$claudeBinParam$openCodeBinParam$codexBinParam$agentFlags"
     }
 
     /**
@@ -282,16 +284,21 @@ object LocalServerManager {
     private fun bootstrapDiagnostic(context: Context): String {
         val bin = LocalEnvironmentManager.getBinDir(context)
         val home = LocalEnvironmentManager.getHomeDir(context)
-        val configured = AuthPreferences(context).getOpenCodeBinaryPathSync().trim()
-            .ifBlank { AuthPreferences.DEFAULT_OPENCODE_BINARY_PATH }
-        val openCode = when {
-            configured == "~" -> home.absolutePath
-            configured.startsWith("~/") -> File(home, configured.removePrefix("~/")).absolutePath
-            else -> configured
+        val prefs = AuthPreferences(context)
+        fun expand(path: String) = when {
+            path == "~" -> home.absolutePath
+            path.startsWith("~/") -> File(home, path.removePrefix("~/")).absolutePath
+            else -> path
         }
         fun quote(path: String) = "'" + path.replace("'", "'\\''") + "'"
-        return "echo 'Pico Dev bootstrap permissions:'; " +
-            "ls -l ${quote(File(bin, "login").absolutePath)} ${quote(File(bin, "bash").absolutePath)} ${quote(openCode)} 2>&1"
+        val openCode = expand(prefs.getOpenCodeBinaryPathSync().trim().ifBlank { AuthPreferences.DEFAULT_OPENCODE_BINARY_PATH })
+        val hub = expand(prefs.getAgyBinaryPathSync().trim().ifBlank { AuthPreferences.DEFAULT_AGY_BINARY_PATH })
+        val bridge = expand(prefs.getAgyBridgeBinaryPathSync().trim().ifBlank { AuthPreferences.DEFAULT_BRIDGE_BINARY_PATH })
+        val loaderName = if (ai.picodev.BuildConfig.TARGET_ABI == "x86_64") "ld-linux-x86-64.so.2" else "ld-linux-aarch64.so.1"
+        val loader = File(LocalEnvironmentManager.getPrefixDir(context), "glibc/lib/$loaderName").absolutePath
+        return "echo 'Pico Dev bootstrap permissions (login, bash, bridge, hub, glibc loader, OpenCode):'; " +
+            "ls -l ${quote(File(bin, "login").absolutePath)} ${quote(File(bin, "bash").absolutePath)} " +
+            "${quote(bridge)} ${quote(hub)} ${quote(loader)} ${quote(openCode)} 2>&1"
     }
 
     /**

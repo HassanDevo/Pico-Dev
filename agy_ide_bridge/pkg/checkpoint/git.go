@@ -20,14 +20,28 @@ var (
 	baseEnvVal []string
 )
 
+// localUsrBin is this app's Linux bin directory, derived from the runtime prefix (never a hard-coded package path).
+func localUsrBin() string {
+	prefix := os.Getenv("PREFIX")
+	if prefix == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			prefix = filepath.Join(filepath.Dir(home), "usr")
+		}
+	}
+	if prefix == "" {
+		return "/usr/bin"
+	}
+	return filepath.Join(prefix, "bin")
+}
+
 // gitPath is the git binary (Termux's when it is there).
 func gitPath() string {
 	gitBinOnce.Do(func() {
 		gitBin = "git"
 		if p := config.SafeLookPath("git"); p != "" {
 			gitBin = p
-		} else if _, err := os.Stat("/data/data/com.termux/files/usr/bin/git"); err == nil {
-			gitBin = "/data/data/com.termux/files/usr/bin/git"
+		} else if _, err := os.Stat(filepath.Join(localUsrBin(), "git")); err == nil {
+			gitBin = filepath.Join(localUsrBin(), "git")
 		}
 		baseEnvVal = buildBaseEnv()
 	})
@@ -49,7 +63,7 @@ func buildBaseEnv() []string {
 		}
 		env = append(env, e)
 	}
-	termuxBin := "/data/data/com.termux/files/usr/bin"
+	termuxBin := localUsrBin()
 	if !strings.Contains(path, termuxBin) {
 		if path == "" {
 			path = termuxBin + ":/usr/local/bin:/usr/bin:/bin"

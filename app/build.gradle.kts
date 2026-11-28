@@ -899,8 +899,14 @@ androidComponents {
         variant.sources.kotlin?.addGeneratedSourceDirectory(generateStrings, GenerateStringsTask::outputDir)
 
         // Pico Dev: debug builds keep the same applicationId (ai.picodev, 10 chars like com.termux) so the
-        // rewritten Termux packages and bundled binaries fit. am.apk and both bridge binaries are shipped as
-        // ready-built assets taken from the official beta APK (submodules and Go are not needed for this build).
+        // rewritten Termux packages and bundled binaries fit. The bridge binaries are prebuilt assets; am.apk is
+        // compiled from the vendored termux/TermuxAm source below so it sends intents as ai.picodev.
+        val amBuildType = if (variant.buildType == "release") "release" else "debug"
+        val termuxAm = tasks.register<TermuxAmAssetTask>("termuxAm${variant.name.replaceFirstChar { it.uppercase() }}") {
+            dependsOn(":termux-am:assemble${amBuildType.replaceFirstChar { it.uppercase() }}")
+            apkDir.set(project(":termux-am").layout.buildDirectory.dir("outputs/apk/$amBuildType"))
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(termuxAm, TermuxAmAssetTask::outputDir)
     }
 }
 

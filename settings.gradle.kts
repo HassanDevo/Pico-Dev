@@ -32,3 +32,6 @@ plugins {
 
 rootProject.name = "Pico Dev"
 include(":app")
+// am.apk (the `am` command's Java code) is built from the vendored termux/TermuxAm source for ai.picodev.
+include(":termux-am")
+project(":termux-am").projectDir = file("termux-am-build")

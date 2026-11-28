@@ -475,7 +475,7 @@ object Troubleshoot {
         val done = CompletableDeferred<String>() // "" = it opened, else why it failed
         // (not null for success: withTimeoutOrNull returns null on a timeout too)
         val ws = AgyBridgeService.instance.wsClient.newWebSocket(
-            Request.Builder().url(AuthPreferences.currentBridgeWsUrl).build(),
+            Request.Builder().url(AgyBridgeService.wsEndpoint(AuthPreferences.currentBridgeWsUrl)).build(),
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) { done.complete("") }
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

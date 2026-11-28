@@ -1979,7 +1979,16 @@ func (h *Handler) McpConfigHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func injectTermuxEnvIfNeeded(rawContent string) string {
-	libTermuxExec := "/data/data/com.termux/files/usr/lib/libtermux-exec.so"
+	prefix := os.Getenv("PREFIX")
+	if prefix == "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			prefix = filepath.Join(filepath.Dir(home), "usr")
+		}
+	}
+	if prefix == "" {
+		return rawContent
+	}
+	libTermuxExec := filepath.Join(prefix, "lib", "libtermux-exec.so")
 	if _, err := os.Stat(libTermuxExec); err != nil {
 		return rawContent
 	}
@@ -2005,12 +2014,11 @@ func injectTermuxEnvIfNeeded(rawContent string) string {
 				envMap["LD_PRELOAD"] = libTermuxExec
 			}
 			if _, hasPath := envMap["PATH"]; !hasPath {
-				home, _ := os.UserHomeDir()
-				if home != "" {
-					envMap["PATH"] = filepath.Join(home, ".local", "bin") + ":/data/data/com.termux/files/usr/bin:/system/bin"
-				} else {
-					envMap["PATH"] = "/data/data/com.termux/files/home/.local/bin:/data/data/com.termux/files/usr/bin:/system/bin"
+				parts := []string{filepath.Join(prefix, "bin")}
+				if home, _ := os.UserHomeDir(); home != "" {
+					parts = append([]string{filepath.Join(home, ".local", "bin")}, parts...)
 				}
+				envMap["PATH"] = strings.Join(append(parts, "/system/bin"), ":")
 			}
 			sMap["env"] = envMap
 		}
