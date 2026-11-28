@@ -347,9 +347,8 @@ func (m *Manager) AutoStart() {
 }
 
 // autoRestart is called when a running server exits on its own (never when Stop set stopping).
-func (m *Manager) autoRestart() {
+func (m *Manager) autoRestart(stopping bool) {
 	m.mu.Lock()
-	stopping := m.stopping
 	if !stopping && time.Since(m.lastRestart) < 3*time.Second {
 		m.mu.Unlock()
 		m.addLog("OpenCode exited; auto-restart is on cooldown")
@@ -425,9 +424,14 @@ func (m *Manager) start() error {
 	}()
 	go func() {
 		_ = cmd.Wait()
+		// Capture the stop intent before waking Stop: Stop may reset its flag immediately after this wait returns,
+		// and a deliberate shutdown must never be treated as a crash.
+		m.mu.Lock()
+		stopping := m.stopping
+		m.mu.Unlock()
 		close(exited)
 		// The server must survive a crash on its own, not only on the next chat request.
-		m.autoRestart()
+		m.autoRestart(stopping)
 	}()
 
 	m.mu.Lock()
