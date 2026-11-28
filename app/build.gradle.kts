@@ -178,6 +178,14 @@ android {
     buildTypes {
         debug {
             signingConfig = signingConfigs.getByName("debug")
+            // Debug-signed, but minified like the release variant: without R8 the debug APK ships 23 dex files
+            // (~62 MB) while the same app with shrinking is ~20 MB. The debug key and version are unchanged.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             buildConfigField("int", "BRIDGE_PORT", "1238")
             buildConfigField("int", "HUB_PORT", "1239")
             buildConfigField("int", "BROWSER_MCP_PORT", "8768")

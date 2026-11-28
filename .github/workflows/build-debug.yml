@@ -52,7 +52,7 @@ jobs:
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
-          name: PicoDev-debug
+          name: PicoDev
           path: output/*
           if-no-files-found: error
 
@@ -60,7 +60,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.name }}
-          name: Pico Dev v${{ steps.version.outputs.name }} (debug)
+          name: Pico Dev v${{ steps.version.outputs.name }}
           body: |
             Debug-signed APKs built from this source by GitHub Actions.
             Checksums: SHA256SUMS.txt
