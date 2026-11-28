@@ -3706,7 +3706,6 @@
     "jarvis.settings.neutral": "Neutral",
     "jarvis.settings.theGrammaticalGenderJarvisUsesFor": "The grammatical gender Jarvis uses for itself. It matters in languages like Hindi (“main kar rahi hoon” / “main kar raha hoon”). Pick a matching voice under Voice output.",
     "jarvis.settings.aboutYouAndExtraInstructions": "About you and extra instructions",
-    "jarvis.settings.eGCallMeSantoshReply": "e.g. Call me Santosh. Reply in Hinglish. I mostly work on the Pico Dev project.",
     "jarvis.settings.sentWithTheFirstMessageOf": "Sent with the first message of every new Jarvis chat. When you change it (or the persona), the open chat is told with your next message. Jarvis' own memory note (Settings → Jarvis → Jarvis chat) is separate: Jarvis edits that one itself.",
     "jarvis.settings.turnOnJarvisFirstSettingsJarvis": "Turn on Jarvis first (Settings → Jarvis).",
     "jarvis.settings.pickTheAgentJarvisTalksTo2": "Pick the agent Jarvis talks to first (Settings → Jarvis → Agent).",
@@ -8561,7 +8560,8 @@
     "privateSpace.overview.locked": "Locked",
     "privateSpace.overview.notSetUp": "Not set up",
     "settings.switcherOverviewSettings.keepScrollPosition": "Remember scroll position",
-    "settings.switcherOverviewSettings.keepScrollPositionHint": "Opens where you left it. Off: it always opens at the top."
+    "settings.switcherOverviewSettings.keepScrollPositionHint": "Opens where you left it. Off: it always opens at the top.",
+    "jarvis.settings.eGCallMeHassanReply": "e.g. Call me Hassan. Reply in Hinglish. I mostly work on the Pico Dev project."
   },
   "notes": {
     "settings.language.aiOff": "Segmented button: the agent picks its reply language",

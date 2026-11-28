@@ -209,7 +209,7 @@ fun JarvisSettingsSectionPage(page: JarvisSettingsPage, cardBg: Color, cardBorde
                     OutlinedTextField(
                         value = about, onValueChange = { P.aboutUser.set(it.take(2000)) },
                         label = { Text(L.jarvis.settings.aboutYouAndExtraInstructions) },
-                        placeholder = { Text(L.jarvis.settings.eGCallMeSantoshReply, fontSize = 12.sp) },
+                        placeholder = { Text(L.jarvis.settings.eGCallMeHassanReply, fontSize = 12.sp) },
                         modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8
                     )
                     JHint(L.jarvis.settings.sentWithTheFirstMessageOf)
